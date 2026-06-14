@@ -1,0 +1,222 @@
+from models.Decoders.Snn_Mtscd_Decoder_V2 import MTSCDDecoderNet
+import torch
+from torch import nn
+# from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
+# from models.Backbones.sdtv3 import Spiking_vit_MetaFormerv2  as SDTV3Backbone
+from mmseg.models.backbones import Spiking_vit_MetaFormer as SDTV2Backbone
+from models.Encoders.FDPC_Encoder import FDPCEncoder
+# from models.SNN_Models_DendFADC import Spiking_vit_MetaFormer
+from functools import partial
+from utils.PAE_NET import PAENTE
+#WUSU最优模型
+norm_cfg = dict(type='SyncBN', requires_grad=True)
+class GSTMSCD_WUSU(nn.Module):
+    def __init__(self, backbone, pretrained, nclass, lightweight, M, Lambda):
+        super(GSTMSCD_WUSU, self).__init__()
+        self.backbone_name = backbone
+        self.nclass = nclass
+        self.lightweight = lightweight
+        self.M = M
+        self.Lambda = Lambda
+        self.T = 2
+        self.Expander = PAENTE(c_in=4, c_e=32, K=2, R=0)
+        # self.channel_nums = [64, 128, 256, 256, 256]
+        self.channel_nums = [32, 64, 128, 360]
+
+        if backbone == "sdtv2":
+            self.backbone = SDTV2Backbone(
+                img_size_h=512,
+                img_size_w=512,
+                patch_size=16,
+                in_channels=4,
+                embed_dim=[64, 128, 256, 360],
+                num_heads=8,
+                mlp_ratios=4,
+                num_classes=13,
+                qkv_bias=False,
+                depths=8,
+                sr_ratios=1,
+                T=1,
+                norm_eval=True,
+                norm_cfg=norm_cfg,
+                decode_mode="Qsnn",
+                init_cfg=None,
+            )
+        elif backbone == "sdtv3":
+            self.backbone = SDTV3Backbone(
+                img_size_h=512,
+                img_size_w=512,
+                patch_size=16,
+                in_channels=4,
+                embed_dim=[64, 128, 256, 360],
+                num_heads=8,
+                mlp_ratios=4,
+                num_classes=13,
+                qkv_bias=False,
+                depths=8,
+                sr_ratios=1,
+                T=1,
+                norm_eval=True,
+                norm_cfg=norm_cfg,
+                decode_mode="QTrick",
+                init_cfg=None,
+            )
+        updated_weights = {}
+        pretrained_weights = torch.load('./GSTM-SCD_Pretraining-weights')
+        new_dict = pretrained_weights['model']
+        # 防止权重不匹配
+        for key, value in new_dict.items():
+            if key.startswith(('downsample1_1.', 'levels.')):
+                if key == 'downsample1_1.encode_conv.weight':
+                    # 检查当前模型的 conv1.weight 形状
+                    current_conv1_weight = self.backbone.state_dict()[key]
+                    # 创建一个新的权重，形状与当前模型一致
+                    new_conv1_weight = torch.zeros_like(current_conv1_weight)
+                    # 将预训练权重的前3通道复制到新权重的前3通道
+                    new_conv1_weight[:, :3, :, :] = value
+                    # 将新权重添加到 updated_weights
+                    updated_weights[key] = new_conv1_weight
+                else:
+                    if key in self.backbone.state_dict():
+                        updated_weights[key] = value
+            else:
+                if key in self.backbone.state_dict():
+                    updated_weights[key] = value
+        self.backbone.load_state_dict(updated_weights, strict=True)
+        after_weight = self.backbone.state_dict()
+        print('Successfully loaded pre-training weights!')
+        # self.encoder = Spiking_vit_MetaFormer(
+        #     detach_reset=True,
+        #     img_size_h=512,
+        #     img_size_w=512,
+        #     patch_size=16,
+        #     embed_dim=[64, 128, 256, 256, 256],
+        #     num_heads=8,
+        #     mlp_ratios=4,
+        #     in_channels=32,
+        #     num_classes=13,
+        #     qkv_bias=False,
+        #     norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        #     depths=8,
+        #     sr_ratios=1,
+        # )
+
+        # self.decoder = SNNMTSCDDecoderHead(
+        #     encoder_channels=self.channel_nums,
+        #     num_semantic_classes=13,
+        #     num_change_classes=1,
+        #     num_phases=3,
+        #     decoder_channels=[256, 256, 256, 256, 256],
+        #     phase_agg_mode="attn",
+        #     share_semantic_decoder=True,
+        #     diff_mode="abs_sub",
+        #     phase_pair=(0, 2),
+        # )
+
+        T, B = 8, 2
+        H, W = 512, 512
+        num_sem_classes = 13
+        num_change_classes = 1
+        self.encoder = nn.ModuleList(
+            [
+                FDPCEncoder(
+                    in_channels=self.channel_nums,  # [64,128,256,256,256]    [32, 64, 128, 360]
+                    phase_names=("t1", "t2", "t3"),
+                    context_pairs=(("t1", "t2"), ("t2", "t3"), ("t1", "t3")),
+                    dendritic_scales=(1, 2, 3),  # f1 不加树突模块         (1, 2, 3, 4)    (1, 2, 3)
+                    relation_scales=(2, 3),  # 只在高层做 relation gate      (3, 4),    (2, 3, ),
+                    conv_groups="depthwise",
+                    deform_groups=1,
+                    dend_kernel_size=3,
+                    fs_cfg=dict(
+                        k_list=[2, 4],
+                        lowfreq_att=False,
+                        lp_type="freq",
+                        act="sigmoid",
+                        spatial="conv",
+                        spatial_group=1,
+                    ),
+                    kernel_decompose="both",
+                    norm="gn",
+                    dend_residual_init=0.0,
+                    context_residual_init=0.0,
+                    detach_context_gate=False,
+                    return_aux_default=False,
+                )
+                for j in range(1)
+            ]
+        )
+        self.decoder = nn.ModuleList(
+            [
+                MTSCDDecoderNet(
+                    in_channels=self.channel_nums,
+                    decoder_channels=256,
+                    num_sem_classes=num_sem_classes,
+                    num_change_classes=num_change_classes,
+                    input_size=(H, W),
+                    phase_windows={"t1": [0], "t2": [1], "t3": [2]},
+                    # {"t1": [0, 1], "t2": [3, 4], "t3": [6, 7]}   {"t1": [0], "t2": [1], "t3": [2]},
+                    transition_windows={"t1_to_t2": None, "t2_to_t3": None, "t1_to_t3": None},
+                    # T=12 -> 默认无 transition windows
+                    temporal_readout="attention",
+                    diff_mode="abs_signed",
+                    share_semantic_decoder=True,
+                    feature_order="high_to_low",
+                    use_phase_affine=False,
+                    use_phase_classifier_bias=False,
+                    use_transition_fusion=False,
+                    return_intermediates_default=True,
+                )
+                for j in range(1)
+            ]
+        )
+
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+
+    def forward(self, x):
+        # x, meta = self.Expander(x)
+
+        t, b, c, h, w = x.shape
+
+        # xy_in = torch.empty(b, c, h, 8 * w).cuda()
+        # for i in range(t):
+        #     xy_in[:, :, :, w*i:w*(i+1)] = x[i]
+        # xy_in = x.permute(1, 2, 3, 4, 0).reshape(b, c, h, -1)
+        feature_xy = self.backbone(x)
+        phase_windows_8_K2_R1 = [[0, 1], [3, 4], [6, 7]]
+        for blk in self.encoder:
+            feature_xy,_ = blk(feature_xy,return_aux=False,)
+        # upsampled_xy = [4, 8, 16, 32, 32]
+        # for idx, feature in enumerate(feature_xy):
+        #     feature_xy[idx] = feature.reshape(b, -1, h // upsampled_xy[idx], w // upsampled_xy[idx], t).permute(4, 0, 1, 2, 3)
+        # outs = self.decoder(feature_xy, out_size=(h, w), phase_windows=phase_windows_8_K2_R1)
+        for blk in self.decoder:
+            outs = blk(feature_xy, input_size=(h, w))
+
+
+
+        seg1, seg2, seg3 = outs["sem_logits_dict"]["t1"], outs["sem_logits_dict"]["t2"], outs["sem_logits_dict"]["t3"]
+        change13 = outs["chg_logits"]
+
+        return seg1, seg2, seg3, change13.squeeze(1)
+
+if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model = MTGrootV3D_SV3(backbone='resnet34', pretrained=True, nclass=7, lightweight=True, M=6, Lambda=0.00005).to(device)
+    # model = ST_VSSM_Siam().to(device)
+    model = GSTMSCD_WUSU(backbone='sdtv2', pretrained=False, nclass=13, lightweight=True, M=6, Lambda=0.00005).to(device)
+    print(model)
+    image1 = torch.randn(2, 4, 512, 512).to(device)
+    image2 = torch.randn(2, 4, 512, 512).to(device)
+    image3 = torch.randn(2, 4, 512, 512).to(device)
+    image4 = torch.randn(2, 4, 512, 512).to(device)
+    image5 = torch.randn(2, 4, 512, 512).to(device)
+    image6 = torch.randn(2, 4, 512, 512).to(device)
+    # seg1, seg2, seg3, change = model(image1, image2, image3)
+    x = torch.stack([image1, image2, image3], dim=0)
+    fs = model(x)
+    # print(seg1)
+    from thop import profile
+    FLOPs, Params = profile(model, inputs=(x,))
+    print('Params = %.2f M, FLOPs = %.2f G' % (Params / 1e6, FLOPs / 1e9))

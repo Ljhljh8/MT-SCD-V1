@@ -1,0 +1,51 @@
+﻿
+# =========================
+# Large files / pretrained weights
+# =========================
+GSTM-SCD_Pretraining-weights/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# =========================
+# Compiled binaries / build outputs
+# =========================
+*.so
+*.pyd
+*.dll
+*.dylib
+*.o
+*.obj
+build/
+**/build/
+
+# =========================
+# Python cache
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+
+# =========================
+# IDE / environment
+# =========================
+.idea/
+.vscode/
+.env
+.venv/
+venv/
+
+# =========================
+# Data / logs / outputs
+# =========================
+data/
+dataset/
+datasets/
+outputs/
+output/
+runs/
+logs/
+checkpoints/
+weights/
+pretrained/
