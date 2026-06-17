@@ -550,6 +550,119 @@ class Q_IFNode(BaseNode):
             return super().forward(x)
 
 
+class _MTSCDRoundSTE(torch.autograd.Function):
+    # @staticmethod
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, x: torch.Tensor, min: float=0, capacity: float=8):
+        ctx.min = min
+        ctx.max = capacity
+        ctx.save_for_backward(x)
+        return torch.round(torch.clamp(x, min=0.0, max=capacity))
+
+    # @staticmethod
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def backward(ctx, grad_output):
+        grad_input = grad_output.clone()
+        i, = ctx.saved_tensors
+        grad_input[i < ctx.min] = 0
+        grad_input[i > ctx.max] = 0
+        return grad_output, None, None
+
+
+class MTSCDPRDNIIFNode(nn.Module):
+    def __init__(
+            self,
+            capacity: int = 8,
+            v_threshold: float = 1.0,
+            output_mode: str = "normalized",
+            alpha_rho: float = 4.0,
+            tau_rho: float = 0.5,
+            alpha_gamma: float = 4.0,
+            tau_gamma: float = 0.5,
+            detach_history: bool = True,
+            eps: float = 1e-6,
+    ):
+        super().__init__()
+        if int(capacity) <= 0:
+            raise ValueError("capacity must be positive")
+        if float(v_threshold) <= 0.0:
+            raise ValueError("v_threshold must be positive")
+        if output_mode != "normalized":
+            raise ValueError("MTSCDPRDNIIFNode currently supports only output_mode='normalized'")
+        if float(eps) <= 0.0:
+            raise ValueError("eps must be positive")
+
+        self.capacity = int(capacity)
+        self.v_threshold = float(v_threshold)
+        self.output_mode = output_mode
+        self.alpha_rho = float(alpha_rho)
+        self.tau_rho = float(tau_rho)
+        self.alpha_gamma = float(alpha_gamma)
+        self.tau_gamma = float(tau_gamma)
+        self.detach_history = bool(detach_history)
+        self.eps = float(eps)
+
+    @staticmethod
+    def _round_ste(x: torch.Tensor, capacity: int):
+        return _MTSCDRoundSTE.apply(x, float(capacity))
+
+    def reset(self):
+        return None
+
+    def extra_repr(self):
+        return (
+            f'capacity={self.capacity}, v_threshold={self.v_threshold}, '
+            f'output_mode={self.output_mode}, alpha_rho={self.alpha_rho}, '
+            f'tau_rho={self.tau_rho}, alpha_gamma={self.alpha_gamma}, '
+            f'tau_gamma={self.tau_gamma}, detach_history={self.detach_history}, eps={self.eps}'
+        )
+
+    def forward(self, x: torch.Tensor):
+        if x.dim() != 5:
+            raise ValueError(f"MTSCDPRDNIIFNode expects input shape [N,B,C,H,W], got {tuple(x.shape)}")
+        if not torch.is_floating_point(x):
+            raise TypeError("MTSCDPRDNIIFNode expects a floating point tensor")
+        if self.output_mode != "normalized":
+            raise ValueError("MTSCDPRDNIIFNode currently supports only output_mode='normalized'")
+
+        x_fp32 = x.float()
+        outputs = []
+        prev_s = None
+        previous_v_post = None
+        capacity = float(self.capacity)
+        threshold = self.v_threshold
+
+        for n in range(x_fp32.shape[0]):
+            u_pre = x_fp32[n]
+            pre_k = self._round_ste(u_pre / threshold, self.capacity)
+            pre_s = pre_k / capacity
+
+            if prev_s is None:
+                risk = torch.zeros(
+                    (u_pre.shape[0], 1, u_pre.shape[2], u_pre.shape[3]),
+                    dtype=u_pre.dtype,
+                    device=u_pre.device,
+                )
+                carry = torch.zeros_like(u_pre)
+            else:
+                history_s = prev_s.detach() if self.detach_history else prev_s
+                history_v = previous_v_post.detach() if self.detach_history else previous_v_post
+                risk = torch.mean(torch.abs(pre_s - history_s), dim=1, keepdim=True)
+                rho = torch.sigmoid(self.alpha_rho * (self.tau_rho - risk))
+                gamma = torch.sigmoid(self.alpha_gamma * (risk - self.tau_gamma))
+                carry = (1.0 - gamma) * rho * history_v
+
+            u = u_pre + carry
+            k = self._round_ste(u / threshold, self.capacity)
+            outputs.append(k / capacity)
+            prev_s = pre_s
+            previous_v_post = u
+
+        return torch.stack(outputs, dim=0).to(dtype=x.dtype)
+
+
 class MultiStepIFNode(IFNode):
     def __init__(self, v_threshold: float = 1., v_reset: float = 0.,
                  surrogate_function: Callable = surrogate.Sigmoid(), detach_reset: bool = False, backend='torch',
