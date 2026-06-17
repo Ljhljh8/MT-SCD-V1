@@ -568,7 +568,7 @@ class _MTSCDRoundSTE(torch.autograd.Function):
         i, = ctx.saved_tensors
         grad_input[i < ctx.min] = 0
         grad_input[i > ctx.max] = 0
-        return grad_output, None, None
+        return grad_input, None, None
 
 
 class MTSCDPRDNIIFNode(nn.Module):
@@ -583,6 +583,12 @@ class MTSCDPRDNIIFNode(nn.Module):
             tau_gamma: float = 0.5,
             detach_history: bool = True,
             eps: float = 1e-6,
+            force_fp32: bool = False,
+            gate_mode: str = "rho_only",
+            state_source: str = "post_output",
+            learnable_carry_scale: bool = True,
+            carry_scale_init: float = 0.0,
+            store_aux: bool = True,
     ):
         super().__init__()
         if int(capacity) <= 0:
@@ -593,6 +599,10 @@ class MTSCDPRDNIIFNode(nn.Module):
             raise ValueError("MTSCDPRDNIIFNode currently supports only output_mode='normalized'")
         if float(eps) <= 0.0:
             raise ValueError("eps must be positive")
+        if gate_mode not in ("rho_only", "gamma_only", "dual"):
+            raise ValueError("gate_mode must be one of: rho_only, gamma_only, dual")
+        if state_source not in ("post_output", "raw_u"):
+            raise ValueError("state_source must be one of: post_output, raw_u")
 
         self.capacity = int(capacity)
         self.v_threshold = float(v_threshold)
@@ -603,10 +613,21 @@ class MTSCDPRDNIIFNode(nn.Module):
         self.tau_gamma = float(tau_gamma)
         self.detach_history = bool(detach_history)
         self.eps = float(eps)
+        self.force_fp32 = bool(force_fp32)
+        self.gate_mode = gate_mode
+        self.state_source = state_source
+        self.learnable_carry_scale = bool(learnable_carry_scale)
+        self.store_aux = bool(store_aux)
+        carry_scale = torch.tensor(float(carry_scale_init))
+        if self.learnable_carry_scale:
+            self.carry_scale = nn.Parameter(carry_scale)
+        else:
+            self.register_buffer("carry_scale", carry_scale)
+        self.last_aux = {}
 
     @staticmethod
     def _round_ste(x: torch.Tensor, capacity: int):
-        return _MTSCDRoundSTE.apply(x, float(capacity))
+        return _MTSCDRoundSTE.apply(x, 0.0, float(capacity))
 
     def reset(self):
         return None
@@ -616,7 +637,10 @@ class MTSCDPRDNIIFNode(nn.Module):
             f'capacity={self.capacity}, v_threshold={self.v_threshold}, '
             f'output_mode={self.output_mode}, alpha_rho={self.alpha_rho}, '
             f'tau_rho={self.tau_rho}, alpha_gamma={self.alpha_gamma}, '
-            f'tau_gamma={self.tau_gamma}, detach_history={self.detach_history}, eps={self.eps}'
+            f'tau_gamma={self.tau_gamma}, detach_history={self.detach_history}, eps={self.eps}, '
+            f'force_fp32={self.force_fp32}, gate_mode={self.gate_mode}, '
+            f'state_source={self.state_source}, learnable_carry_scale={self.learnable_carry_scale}, '
+            f'store_aux={self.store_aux}'
         )
 
     def forward(self, x: torch.Tensor):
@@ -627,15 +651,18 @@ class MTSCDPRDNIIFNode(nn.Module):
         if self.output_mode != "normalized":
             raise ValueError("MTSCDPRDNIIFNode currently supports only output_mode='normalized'")
 
-        x_fp32 = x.float()
+        x_work = x.float() if self.force_fp32 else x
         outputs = []
+        risk_outputs = []
+        gate_outputs = []
+        carry_abs_means = []
         prev_s = None
-        previous_v_post = None
+        prev_raw_u = None
         capacity = float(self.capacity)
         threshold = self.v_threshold
 
-        for n in range(x_fp32.shape[0]):
-            u_pre = x_fp32[n]
+        for n in range(x_work.shape[0]):
+            u_pre = x_work[n]
             pre_k = self._round_ste(u_pre / threshold, self.capacity)
             pre_s = pre_k / capacity
 
@@ -645,22 +672,45 @@ class MTSCDPRDNIIFNode(nn.Module):
                     dtype=u_pre.dtype,
                     device=u_pre.device,
                 )
+                gate = torch.zeros_like(risk)
                 carry = torch.zeros_like(u_pre)
             else:
                 history_s = prev_s.detach() if self.detach_history else prev_s
-                history_v = previous_v_post.detach() if self.detach_history else previous_v_post
+                if self.state_source == "post_output":
+                    history_state = history_s
+                else:
+                    history_state = prev_raw_u.detach() if self.detach_history else prev_raw_u
                 risk = torch.mean(torch.abs(pre_s - history_s), dim=1, keepdim=True)
                 rho = torch.sigmoid(self.alpha_rho * (self.tau_rho - risk))
                 gamma = torch.sigmoid(self.alpha_gamma * (risk - self.tau_gamma))
-                carry = (1.0 - gamma) * rho * history_v
+                if self.gate_mode == "rho_only":
+                    gate = rho
+                elif self.gate_mode == "gamma_only":
+                    gate = 1.0 - gamma
+                else:
+                    gate = rho * (1.0 - gamma)
+                carry = self.carry_scale.to(dtype=u_pre.dtype) * gate * history_state
 
             u = u_pre + carry
             k = self._round_ste(u / threshold, self.capacity)
-            outputs.append(k / capacity)
-            prev_s = pre_s
-            previous_v_post = u
+            out_s = k / capacity
+            outputs.append(out_s)
+            risk_outputs.append(risk)
+            gate_outputs.append(gate)
+            carry_abs_means.append(carry.abs().mean())
+            prev_s = out_s
+            prev_raw_u = u_pre
 
-        return torch.stack(outputs, dim=0).to(dtype=x.dtype)
+        if self.store_aux:
+            self.last_aux = {
+                "risk": torch.stack(risk_outputs, dim=0).detach(),
+                "gate": torch.stack(gate_outputs, dim=0).detach(),
+                "carry_abs_mean": torch.stack(carry_abs_means, dim=0).detach(),
+            }
+        else:
+            self.last_aux = {}
+
+        return torch.stack(outputs, dim=0)
 
 
 class MultiStepIFNode(IFNode):

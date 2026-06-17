@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
-from mmseg.Qtrick_architecture.clock_driven.neuron import Q_IFNode
+from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 
 PairName = Tuple[str, str]
@@ -80,6 +80,27 @@ def _ensure_pair_tuple(pair: Sequence[str]) -> PairName:
     return str(pair[0]), str(pair[1])
 
 
+def _normalize_dend_soma_type(dend_soma_type: str) -> str:
+    soma_type = str(dend_soma_type or "q_if").lower()
+    if soma_type not in ("q_if", "mtscd_prd", "identity", "none"):
+        raise ValueError("dend_soma_type must be one of: q_if, mtscd_prd, identity, none")
+    return soma_type
+
+
+def _make_dend_soma(dend_soma_type: str, dend_soma_cfg: Optional[dict]) -> nn.Module:
+    soma_type = _normalize_dend_soma_type(dend_soma_type)
+    if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
+        raise ValueError("dend_soma_cfg must be a dict or None")
+    cfg = dict(dend_soma_cfg or {})
+    if soma_type == "q_if":
+        return Q_IFNode(surrogate_function=Quant())
+    elif soma_type == "mtscd_prd":
+        return MTSCDPRDNIIFNode(**cfg)
+    elif soma_type in ("identity", "none"):
+        return nn.Identity()
+    raise ValueError("unreachable dend_soma_type")
+
+
 class DendriticScaleAdapter(nn.Module):
     """
     Phase-wise local spatial-frequency adapter.
@@ -107,10 +128,16 @@ class DendriticScaleAdapter(nn.Module):
         fs_cfg: Optional[dict] = None,
         kernel_decompose: Optional[str] = "both",
         padding_mode: str = "repeat",
+        dend_soma_type: str = "q_if",
+        dend_soma_cfg: Optional[dict] = None,
     ):
         super().__init__()
         self.channels = int(channels)
         self.use_dendritic = bool(use_dendritic)
+        self.dend_soma_type = _normalize_dend_soma_type(dend_soma_type)
+        if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
+            raise ValueError("dend_soma_cfg must be a dict or None")
+        self.dend_soma_cfg = dict(dend_soma_cfg or {})
 
         if not self.use_dendritic:
             self.adapter = nn.Identity()
@@ -156,7 +183,7 @@ class DendriticScaleAdapter(nn.Module):
 
         self.post_norm = _make_norm2d(self.channels, norm=norm, num_groups=norm_groups)
         # self.act = nn.GELU()
-        self.act = Q_IFNode(surrogate_function=Quant())
+        self.act = _make_dend_soma(self.dend_soma_type, self.dend_soma_cfg)
         self.res_scale = nn.Parameter(torch.tensor(float(residual_init)))
 
     def forward(self, x: torch.Tensor, K=None, return_k: bool = True) -> torch.Tensor:
@@ -290,6 +317,8 @@ class FDPCEncoder(nn.Module):
         norm: str = "gn",
         norm_groups: int = 32,
         dend_residual_init: float = 0.0,
+        dend_soma_type: str = "q_if",
+        dend_soma_cfg: Optional[dict] = None,
         context_residual_init: float = 0.0,
         relation_channels: Optional[int] = None,
         relation_hidden_channels: Optional[int] = None,
@@ -338,6 +367,8 @@ class FDPCEncoder(nn.Module):
                     residual_init=dend_residual_init,
                     fs_cfg=fs_cfg,
                     kernel_decompose=kernel_decompose,
+                    dend_soma_type=dend_soma_type,
+                    dend_soma_cfg=dend_soma_cfg,
                 )
             )
 
