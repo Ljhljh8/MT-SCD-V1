@@ -141,6 +141,19 @@ class GSTMSCD_WUSU(nn.Module):
                     dend_residual_init=0.0,
                     context_residual_init=0.0,
                     detach_context_gate=False,
+                    relation_mode="prg",
+                    # relation_mode="pdca",
+                    # pdca_cfg=dict(
+                    #     num_heads=4,
+                    #     num_points=4,
+                    #     offset_radius=4.0,
+                    #     use_null_source=True,
+                    #     residual_init=1e-3,
+                    #     per_scale={
+                    #         "2": {"offset_radius": 4.0},
+                    #         "3": {"offset_radius": 8.0},
+                    #     },
+                    # ),
                     return_aux_default=False,
                 )
                 for j in range(1)

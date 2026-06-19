@@ -18,14 +18,13 @@ Design constraints:
       only. They are not final change maps.
 """
 
-from __future__ import annotations
-
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
+from models.Encoders.phase_deformable_context_attention import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 
@@ -324,11 +323,15 @@ class FDPCEncoder(nn.Module):
         relation_hidden_channels: Optional[int] = None,
         detach_context_gate: bool = False,
         return_aux_default: bool = False,
+        relation_mode: str = "prg",
+        pdca_cfg: Optional[dict] = None,
     ):
         super().__init__()
 
         if len(in_channels) == 0:
             raise ValueError("in_channels must not be empty")
+        if relation_mode not in ("prg", "pdca", "none"):
+            raise ValueError("relation_mode must be one of: prg, pdca, none")
 
         self.in_channels = [int(c) for c in in_channels]
         self.num_scales = len(self.in_channels)
@@ -342,6 +345,8 @@ class FDPCEncoder(nn.Module):
 
         self.detach_context_gate = bool(detach_context_gate)
         self.return_aux_default = bool(return_aux_default)
+        self.relation_mode = relation_mode
+        self.pdca_cfg = dict(pdca_cfg or {})
 
         for s in self.dendritic_scales | self.relation_scales:
             if s < 0 or s >= self.num_scales:
@@ -375,27 +380,36 @@ class FDPCEncoder(nn.Module):
         self.relation_gates = nn.ModuleDict()
         self.value_projs = nn.ModuleDict()
         self.context_scales = nn.ParameterDict()
+        self.pdca_blocks = nn.ModuleDict()
 
         for s in sorted(self.relation_scales):
             channels = self.in_channels[s]
             key = str(s)
 
-            self.relation_gates[key] = PairwiseRelationGate(
-                channels=channels,
-                relation_channels=relation_channels,
-                hidden_channels=relation_hidden_channels,
-                norm=norm,
-                norm_groups=norm_groups,
-            )
+            if self.relation_mode == "prg":
+                self.relation_gates[key] = PairwiseRelationGate(
+                    channels=channels,
+                    relation_channels=relation_channels,
+                    hidden_channels=relation_hidden_channels,
+                    norm=norm,
+                    norm_groups=norm_groups,
+                )
 
-            self.value_projs[key] = nn.Sequential(
-                Q_IFNode(surrogate_function=Quant()),  # nn.GELU(),
-                nn.Conv2d(channels, channels, kernel_size=1, bias=False, )
-            )
+                self.value_projs[key] = nn.Sequential(
+                    Q_IFNode(surrogate_function=Quant()),  # nn.GELU(),
+                    nn.Conv2d(channels, channels, kernel_size=1, bias=False, )
+                )
 
-            self.context_scales[key] = nn.Parameter(
-                torch.tensor(float(context_residual_init))
-            )
+                self.context_scales[key] = nn.Parameter(
+                    torch.tensor(float(context_residual_init))
+                )
+            elif self.relation_mode == "pdca":
+                self.pdca_blocks[key] = PhaseDeformableContextAttention(
+                    channels=channels,
+                    phase_names=self.phase_names,
+                    context_pairs=self.context_pairs,
+                    **self._resolve_pdca_cfg_for_scale(key)
+                )
 
     @staticmethod
     def _new_aux() -> AuxDict:
@@ -403,7 +417,20 @@ class FDPCEncoder(nn.Module):
             "relation_cues": {},
             "context_gates": {},
             "change_risks": {},
+            "pdca_offsets": {},
+            "pdca_attn_weights": {},
+            "pdca_source_weights": {},
+            "pdca_joint_weights": {},
         }
+
+    def _resolve_pdca_cfg_for_scale(self, scale_key: str) -> dict:
+        cfg = dict(self.pdca_cfg)
+        per_scale = cfg.pop("per_scale", {})
+        if scale_key in per_scale:
+            cfg.update(per_scale[scale_key])
+        elif int(scale_key) in per_scale:
+            cfg.update(per_scale[int(scale_key)])
+        return cfg
 
     def _store_aux(
         self,
@@ -527,12 +554,27 @@ class FDPCEncoder(nn.Module):
         aux = self._new_aux()
 
         for s in sorted(self.relation_scales):
-            encoded[s] = self._apply_relation_scale(
-                scale_index=s,
-                feat=encoded[s],
-                aux=aux,
-                collect_aux=bool(return_aux),
-                detach_aux=bool(detach_aux),
-            )
+            if self.relation_mode == "prg":
+                encoded[s] = self._apply_relation_scale(
+                    scale_index=s,
+                    feat=encoded[s],
+                    aux=aux,
+                    collect_aux=bool(return_aux),
+                    detach_aux=bool(detach_aux),
+                )
+            elif self.relation_mode == "pdca":
+                scale_key = str(s)
+                encoded[s], pdca_aux = self.pdca_blocks[scale_key](
+                    encoded[s],
+                    return_aux=bool(return_aux),
+                    detach_aux=bool(detach_aux),
+                )
+                if return_aux:
+                    aux["pdca_offsets"][scale_key] = pdca_aux.get("offsets", {})
+                    aux["pdca_attn_weights"][scale_key] = pdca_aux.get("attn_weights", {})
+                    aux["pdca_source_weights"][scale_key] = pdca_aux.get("source_weights", {})
+                    aux["pdca_joint_weights"][scale_key] = pdca_aux.get("joint_weights", {})
+            elif self.relation_mode == "none":
+                pass
 
         return encoded, aux if return_aux else {}

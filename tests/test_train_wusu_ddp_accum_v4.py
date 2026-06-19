@@ -42,6 +42,31 @@ def test_parser_accepts_timm_optimizer_scheduler_arguments_without_duplicate_cli
     assert not hasattr(args, "clip_grad")
 
 
+def test_parser_accepts_amp_debug_nonfinite_flag_default_off():
+    train_v4 = importlib.import_module("train_WUSU_ddp_accum_v4")
+
+    default_args = train_v4.build_parser().parse_args([])
+    enabled_args = train_v4.build_parser().parse_args(["--amp-debug-nonfinite"])
+
+    assert default_args.amp_debug_nonfinite is False
+    assert enabled_args.amp_debug_nonfinite is True
+
+
+def test_first_nonfinite_gradient_name_reports_first_bad_parameter():
+    train_v4 = importlib.import_module("train_WUSU_ddp_accum_v4")
+    torch = train_v4.torch
+    if torch is None:
+        pytest.skip("PyTorch is not available in this environment.")
+
+    model = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 1))
+    for param in model.parameters():
+        param.grad = torch.ones_like(param)
+    model[0].weight.grad[0, 0] = float("nan")
+    model[1].bias.grad[0] = float("inf")
+
+    assert train_v4.first_nonfinite_gradient_name(model) == "0.weight"
+
+
 def test_build_timm_optimizer_uses_unwrapped_model_and_single_factory(monkeypatch):
     train_v4 = importlib.import_module("train_WUSU_ddp_accum_v4")
     calls = {}
