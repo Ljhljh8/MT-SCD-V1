@@ -4,7 +4,7 @@ from torch import nn
 # from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
 # from models.Backbones.sdtv3 import Spiking_vit_MetaFormerv2  as SDTV3Backbone
 from mmseg.models.backbones import Spiking_vit_MetaFormer as SDTV2Backbone
-from models.Encoders.FDPC_EncoderV1 import FDPCEncoder
+from models.Encoders.FDPC_Encoder import FDPCEncoder
 # from models.SNN_Models_DendFADC import Spiking_vit_MetaFormer
 from functools import partial
 from utils.PAE_NET import PAENTE
@@ -62,7 +62,7 @@ class GSTMSCD_WUSU(nn.Module):
                 init_cfg=None,
             )
         updated_weights = {}
-        pretrained_weights = torch.load('/media/think/data/ljh/Spike2Former-main/Segmentation/Meta-Spikeformer-15M.pth')
+        pretrained_weights = torch.load('./GSTM-SCD_Pretraining-weights')
         new_dict = pretrained_weights['model']
         # 防止权重不匹配
         for key, value in new_dict.items():
@@ -124,12 +124,12 @@ class GSTMSCD_WUSU(nn.Module):
                     phase_names=("t1", "t2", "t3"),
                     context_pairs=(("t1", "t2"), ("t2", "t3"), ("t1", "t3")),
                     dendritic_scales=(1, 2, 3),  # f1 不加树突模块         (1, 2, 3, 4)    (1, 2, 3)
-                    relation_scales=(3,),  # 只在高层做 relation gate      (3, 4),    (2, 3, ),
+                    relation_scales=(2, 3),  # 只在高层做 relation gate      (3, 4),    (2, 3, ),
                     conv_groups="depthwise",
                     deform_groups=1,
                     dend_kernel_size=3,
                     fs_cfg=dict(
-                        k_list=[2, 4, 8],
+                        k_list=[2, 4],
                         lowfreq_att=False,
                         lp_type="freq",
                         act="sigmoid",
@@ -141,22 +141,22 @@ class GSTMSCD_WUSU(nn.Module):
                     dend_residual_init=0.0,
                     context_residual_init=0.0,
                     detach_context_gate=False,
-                    relation_mode="pdca",
+                    relation_mode="prg",
                     # relation_mode="pdca",
-                    pdca_cfg=dict(
-                        num_heads=4,
-                        num_points=24,
-                        offset_radius=4.0,
-                        use_null_source=True,
-                        residual_init=1e-3,
-                        per_scale={
-                            "2": {"offset_radius": 64.0},
-                            "3": {"offset_radius": 32.0},
-                        },
-                    ),
+                    # pdca_cfg=dict(
+                    #     num_heads=4,
+                    #     num_points=4,
+                    #     offset_radius=4.0,
+                    #     use_null_source=True,
+                    #     residual_init=1e-3,
+                    #     per_scale={
+                    #         "2": {"offset_radius": 4.0},
+                    #         "3": {"offset_radius": 8.0},
+                    #     },
+                    # ),
                     return_aux_default=False,
                 )
-                for j in range(4)
+                for j in range(1)
             ]
         )
         self.decoder = nn.ModuleList(
