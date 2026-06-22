@@ -4,18 +4,42 @@ Phase-Deformable Context Attention for physical-phase MTSCD features.
 Input and output use [N,B,C,H,W], where N is the remote-sensing phase axis.
 """
 
+import importlib.util
+from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from mmseg.Qtrick_architecture.clock_driven.neuron import Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant
 
 
 PairName = Tuple[str, str]
 AuxDict = Dict[str, Dict[str, torch.Tensor]]
+
+
+def _load_dcnv3_core_pytorch():
+    func_path = (
+        Path(__file__).resolve().parents[2]
+        / "mmseg"
+        / "transformer"
+        / "transformer"
+        / "ops_dcnv3"
+        / "functions"
+        / "dcnv3_func.py"
+    )
+    if not func_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("_pdca_dcnv3_func", str(func_path))
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "dcnv3_core_pytorch", None)
+
+
+dcnv3_core_pytorch = _load_dcnv3_core_pytorch()
 
 
 def _valid_group_count(channels: int, preferred: int = 32) -> int:
@@ -66,23 +90,7 @@ class StatelessQIF(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.quant(x / self.v_threshold) / float(self.capacity)
-# class StatelessQIF(torch.autograd.Function):
-#     @staticmethod
-#     @torch.cuda.amp.custom_fwd
-#     def forward(ctx, i, min_value=0, max_value=8): #1111
-#         ctx.min = min_value
-#         ctx.max = max_value
-#         ctx.save_for_backward(i)
-#         return torch.round(torch.clamp(i, min=min_value, max=max_value))
-#
-#     @staticmethod
-#     @torch.cuda.amp.custom_fwd
-#     def backward(ctx, grad_output):
-#         grad_input = grad_output.clone()
-#         i, = ctx.saved_tensors
-#         grad_input[i < ctx.min] = 0
-#         grad_input[i > ctx.max] = 0
-#         return grad_input, None, None
+
 
 class PhaseDeformableContextAttention(nn.Module):
     def __init__(
@@ -97,13 +105,18 @@ class PhaseDeformableContextAttention(nn.Module):
         norm: str = "gn",
         norm_groups: int = 32,
         use_q_if_value: bool = True,
-        use_q_if_heads: bool = True,
+        use_q_if_heads: bool = False,
         residual_init: float = 1e-3,
         detach_offsets: bool = False,
         return_aux_default: bool = False,
-        use_stateful_q_if: bool = True,
+        use_stateful_q_if: bool = False,
         use_stateless_integer_activation: bool = True,
         use_null_source: bool = True,
+        sampling_backend: str = "grid_sample",
+        dcn_kernel_size: int = 3,
+        dcn_pad: Optional[int] = None,
+        dcn_dilation: int = 1,
+        dcn_offset_scale: float = 1.0,
     ):
         super().__init__()
         self.channels = int(channels)
@@ -113,6 +126,11 @@ class PhaseDeformableContextAttention(nn.Module):
         self.detach_offsets = bool(detach_offsets)
         self.return_aux_default = bool(return_aux_default)
         self.use_null_source = bool(use_null_source)
+        self.sampling_backend = str(sampling_backend)
+        self.dcn_kernel_size = int(dcn_kernel_size)
+        self.dcn_dilation = int(dcn_dilation)
+        self.dcn_pad = int(dcn_pad) if dcn_pad is not None else (self.dcn_dilation * (self.dcn_kernel_size - 1)) // 2
+        self.dcn_offset_scale = float(dcn_offset_scale)
 
         if self.channels <= 0:
             raise ValueError("channels must be positive")
@@ -122,6 +140,21 @@ class PhaseDeformableContextAttention(nn.Module):
             raise ValueError("num_points must be positive")
         if self.channels % self.num_heads != 0:
             raise ValueError("channels=%d must be divisible by num_heads=%d" % (self.channels, self.num_heads))
+        if self.sampling_backend not in ("grid_sample", "dcnv3_core"):
+            raise ValueError("sampling_backend must be one of: grid_sample, dcnv3_core")
+        if self.dcn_kernel_size <= 0:
+            raise ValueError("dcn_kernel_size must be positive")
+        if self.dcn_dilation <= 0:
+            raise ValueError("dcn_dilation must be positive")
+        if self.dcn_pad < 0:
+            raise ValueError("dcn_pad must be non-negative")
+        if bool(use_stateful_q_if):
+            raise ValueError("stateful Q_IFNode is not supported in PDCA")
+        if self.sampling_backend == "dcnv3_core":
+            if self.num_points != self.dcn_kernel_size * self.dcn_kernel_size:
+                raise ValueError("dcnv3_core requires num_points == dcn_kernel_size * dcn_kernel_size")
+            if dcnv3_core_pytorch is None:
+                raise ImportError("dcnv3_core_pytorch is unavailable")
 
         self.phase_names = tuple(str(name) for name in phase_names)
         if len(self.phase_names) == 0:
@@ -129,7 +162,7 @@ class PhaseDeformableContextAttention(nn.Module):
         self.phase_to_index = {name: idx for idx, name in enumerate(self.phase_names)}
         if len(self.phase_to_index) != len(self.phase_names):
             raise ValueError("phase_names must be unique")
-        self.act = Q_IFNode(surrogate_function=Quant())
+
         self.context_pairs = tuple(_ensure_pair_tuple(pair) for pair in context_pairs)
         pair_keys = set()
         for a, b in self.context_pairs:
@@ -154,20 +187,19 @@ class PhaseDeformableContextAttention(nn.Module):
         if hidden <= 0:
             raise ValueError("hidden_channels must be positive")
 
-        control_activation = self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads))
+        control_activation = self._make_control_activation()
         value_activation = self._make_value_activation(
-            bool(use_stateful_q_if),
             bool(use_stateless_integer_activation),
             bool(use_q_if_value),
         )
-        self.QLIF_offset = Q_IFNode(surrogate_function=Quant())
+
         self.offset_head = nn.Sequential(
             nn.Conv2d(4 * self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
             control_activation,
             nn.Conv2d(hidden, hidden, kernel_size=3, padding=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
-            self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads)),
+            self._make_control_activation(),
             nn.Conv2d(hidden, self.num_heads * self.num_points * 2, kernel_size=1, bias=True),
         )
         nn.init.zeros_(self.offset_head[-1].weight)
@@ -176,17 +208,17 @@ class PhaseDeformableContextAttention(nn.Module):
         self.attn_head = nn.Sequential(
             nn.Conv2d(4 * self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
-            self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads)),
+            self._make_control_activation(),
             nn.Conv2d(hidden, hidden, kernel_size=3, padding=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
-            self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads)),
+            self._make_control_activation(),
             nn.Conv2d(hidden, self.num_heads * self.num_points, kernel_size=1, bias=True),
         )
 
         self.null_logit_head = nn.Sequential(
             nn.Conv2d(self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
-            Q_IFNode(surrogate_function=Quant()),   #nn.GELU(),
+            nn.GELU(),
             nn.Conv2d(hidden, self.num_heads * self.num_points, kernel_size=1, bias=True),
         )
         nn.init.zeros_(self.null_logit_head[-1].weight)
@@ -197,33 +229,20 @@ class PhaseDeformableContextAttention(nn.Module):
             _make_norm2d(self.channels, norm=norm, num_groups=norm_groups),
             value_activation,
         )
-        self.out_proj = nn.Sequential(
-            Q_IFNode(surrogate_function=Quant()),
-            nn.Conv2d(self.channels, self.channels, kernel_size=1, bias=False),
-            _make_norm2d(self.channels, norm=norm, num_groups=norm_groups),
-        )
+        self.out_proj = nn.Conv2d(self.channels, self.channels, kernel_size=1, bias=False)
         self.residual_scale = nn.Parameter(torch.tensor(float(residual_init)))
 
     @staticmethod
-    def _make_control_activation(use_stateful_q_if: bool, use_q_if_heads: bool) -> nn.Module:
-        if use_stateful_q_if and use_q_if_heads:
-            # WARNING: stateful Q_IFNode may leak membrane state across directed pairs
-            # unless pair-wise reset is applied.
-            return Q_IFNode(surrogate_function=Quant())
+    def _make_control_activation() -> nn.Module:
         return nn.GELU()
 
     @staticmethod
     def _make_value_activation(
-        use_stateful_q_if: bool,
         use_stateless_integer_activation: bool,
         use_q_if_value: bool,
     ) -> nn.Module:
         if not use_q_if_value:
             return nn.GELU()
-        if use_stateful_q_if:
-            # WARNING: stateful Q_IFNode may leak membrane state across directed pairs
-            # unless pair-wise reset is applied.
-            return Q_IFNode(surrogate_function=Quant())
         if use_stateless_integer_activation:
             return StatelessQIF()
         return nn.GELU()
@@ -283,6 +302,47 @@ class PhaseDeformableContextAttention(nn.Module):
         )
         return sampled.view(B, G, K, Cg, H, W)
 
+    def _deformable_sample_dcnv3_core(
+        self,
+        source_values: torch.Tensor,
+        offsets: torch.Tensor,
+        weights: torch.Tensor,
+    ) -> torch.Tensor:
+        if dcnv3_core_pytorch is None:
+            raise ImportError("dcnv3_core_pytorch is unavailable")
+
+        B, Q, C, H, W = source_values.shape
+        Bo, Qo, G, P, two, Ho, Wo = offsets.shape
+        Bw, Qw, Gw, Pw, Hw, Ww = weights.shape
+        if (B, Q, H, W) != (Bo, Qo, Ho, Wo) or (B, Q, H, W) != (Bw, Qw, Hw, Ww):
+            raise ValueError("dcnv3_core source/offset/weight shape mismatch")
+        if G != self.num_heads or Gw != self.num_heads or P != self.num_points or Pw != self.num_points or two != 2:
+            raise ValueError("dcnv3_core group/point shape mismatch")
+
+        dcn_input = source_values.permute(0, 1, 3, 4, 2).contiguous().view(B * Q, H, W, C)
+        dcn_offset = offsets.permute(0, 1, 5, 6, 2, 3, 4).contiguous().view(B * Q, H, W, G * P * 2)
+        dcn_mask = weights.permute(0, 1, 4, 5, 2, 3).contiguous().view(B * Q, H, W, G * P)
+
+        # dcnv3_core_pytorch uses align_corners=False and zero padding internally;
+        # this intentionally differs from the grid_sample backend.
+        sampled = dcnv3_core_pytorch(
+            dcn_input,
+            dcn_offset,
+            dcn_mask,
+            kernel_h=self.dcn_kernel_size,
+            kernel_w=self.dcn_kernel_size,
+            stride_h=1,
+            stride_w=1,
+            pad_h=self.dcn_pad,
+            pad_w=self.dcn_pad,
+            dilation_h=self.dcn_dilation,
+            dilation_w=self.dcn_dilation,
+            group=self.num_heads,
+            group_channels=C // self.num_heads,
+            offset_scale=self.dcn_offset_scale,
+        )
+        return sampled.view(B, Q, H, W, C).sum(dim=1).permute(0, 3, 1, 2).contiguous()
+
     def forward(
         self,
         feat: torch.Tensor,
@@ -292,11 +352,10 @@ class PhaseDeformableContextAttention(nn.Module):
         if return_aux is None:
             return_aux = self.return_aux_default
         collect_aux = bool(return_aux)
-        pre_feat = feat
+
         if feat.ndim != 5:
             raise ValueError("PhaseDeformableContextAttention expects [N,B,C,H,W], got %r" % (tuple(feat.shape),))
         N, B, C, H, W = feat.shape
-        feat = self.act(feat)
         if N != len(self.phase_names):
             raise ValueError("N=%d does not match phase_names=%r" % (N, self.phase_names))
         if C != self.channels:
@@ -310,14 +369,18 @@ class PhaseDeformableContextAttention(nn.Module):
             target = feat[target_idx]
             logits_by_source = []
             sampled_by_source = []
+            dcn_values = []
+            dcn_offsets = []
+            dcn_q_indices = []
             source_names = self.source_names_by_target[target_name]
 
             for src_name in source_names:
                 if src_name == "__null__":
                     null_logits = self.null_logit_head(target).view(B, self.num_heads, self.num_points, H, W)
-                    null_value = target.new_zeros(B, self.num_heads, self.num_points, Cg, H, W)
                     logits_by_source.append(null_logits)
-                    sampled_by_source.append(null_value)
+                    if self.sampling_backend == "grid_sample":
+                        null_value = target.new_zeros(B, self.num_heads, self.num_points, Cg, H, W)
+                        sampled_by_source.append(null_value)
                     continue
 
                 src_idx = self.phase_to_index[src_name]
@@ -334,10 +397,15 @@ class PhaseDeformableContextAttention(nn.Module):
 
                 logits = self.attn_head(evidence).view(B, self.num_heads, self.num_points, H, W)
                 value = self.value_proj(source)
-                sampled = self._deformable_sample_vectorized(value, offset)
 
                 logits_by_source.append(logits)
-                sampled_by_source.append(sampled)
+                if self.sampling_backend == "grid_sample":
+                    sampled = self._deformable_sample_vectorized(value, offset)
+                    sampled_by_source.append(sampled)
+                else:
+                    dcn_q_indices.append(len(logits_by_source) - 1)
+                    dcn_values.append(value)
+                    dcn_offsets.append(offset)
 
                 if collect_aux:
                     direction_key = "%s<-%s" % (target_name, src_name)
@@ -351,9 +419,25 @@ class PhaseDeformableContextAttention(nn.Module):
             joint_weights = torch.softmax(logits_stacked.view(B, self.num_heads, Q * self.num_points, H, W), dim=2)
             joint_weights = joint_weights.view(B, self.num_heads, Q, self.num_points, H, W)
 
-            sampled_stacked = torch.stack(sampled_by_source, dim=2)
-            context = (joint_weights.unsqueeze(4) * sampled_stacked).sum(dim=(2, 3))
-            context = context.contiguous().view(B, C, H, W)
+            if self.sampling_backend == "grid_sample":
+                sampled_stacked = torch.stack(sampled_by_source, dim=2)
+                context = (joint_weights.unsqueeze(4) * sampled_stacked).sum(dim=(2, 3))
+                context = context.contiguous().view(B, C, H, W)
+            else:
+                if len(dcn_values) == 0:
+                    context = target.new_zeros(B, C, H, W)
+                else:
+                    dcn_value_tensor = torch.stack(dcn_values, dim=1)
+                    dcn_offset_tensor = torch.stack(dcn_offsets, dim=1)
+                    dcn_weight_tensor = torch.stack(
+                        [joint_weights[:, :, q_idx] for q_idx in dcn_q_indices],
+                        dim=1,
+                    )
+                    context = self._deformable_sample_dcnv3_core(
+                        dcn_value_tensor,
+                        dcn_offset_tensor,
+                        dcn_weight_tensor,
+                    )
             residual_by_phase[target_idx] = residual_by_phase[target_idx] + self.out_proj(context)
 
             if collect_aux:
@@ -369,5 +453,4 @@ class PhaseDeformableContextAttention(nn.Module):
                     )
 
         residual = torch.stack(residual_by_phase, dim=0)
-        return pre_feat + self.residual_scale * residual, aux
-        # return pre_feat + residual, aux
+        return feat + self.residual_scale * residual, aux

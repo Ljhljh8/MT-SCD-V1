@@ -191,8 +191,7 @@ class DendriticScaleAdapter(nn.Module):
 
         if not self.use_dendritic:
             return x
-        x_pre = x
-        x = self.act(x)
+
         N, B, C, H, W = x.shape
         if C != self.channels:
             raise ValueError(f"Expected C={self.channels}, got C={C}")
@@ -204,12 +203,12 @@ class DendriticScaleAdapter(nn.Module):
                 "DendriticScaleAdapter must preserve channel and spatial shape, "
                 f"but got input={tuple(x.shape)}, output={tuple(y.shape)}"
             )
-        y = self.post_norm(y.flatten(0, 1)).reshape(N, B, C, H, W).contiguous()
-        # y = self.act(y)
 
-        # return x + self.res_scale * y, K
-        return x_pre + self.res_scale * y, K
-        # return x_pre + y, K
+        y = self.post_norm(y.flatten(0, 1)).reshape(N, B, C, H, W).contiguous()
+        y = self.act(y)
+
+        return x + self.res_scale * y, K
+
 
 class PairwiseRelationGate(nn.Module):
     """
