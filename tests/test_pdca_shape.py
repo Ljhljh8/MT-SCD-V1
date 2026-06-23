@@ -38,7 +38,10 @@ class PDCAShapeTest(unittest.TestCase):
 
         self.assertEqual(out.shape, x.shape)
         self.assertTrue(torch.isfinite(out).all())
-        self.assertEqual(set(aux), {"offsets", "attn_weights", "source_weights", "joint_weights"})
+        self.assertEqual(
+            set(aux),
+            {"offsets", "attn_weights", "source_weights", "joint_weights", "relation_logits"},
+        )
         self.assertEqual(
             pdca.source_names_by_target,
             {

@@ -104,6 +104,9 @@ class PhaseDeformableContextAttention(nn.Module):
         use_stateful_q_if: bool = True,
         use_stateless_integer_activation: bool = True,
         use_null_source: bool = True,
+        use_relation_aux: bool = False,
+        relation_aux_pairs: Optional[Sequence[str]] = None,
+        relation_aux_hidden_channels: Optional[int] = None,
     ):
         super().__init__()
         self.channels = int(channels)
@@ -113,6 +116,7 @@ class PhaseDeformableContextAttention(nn.Module):
         self.detach_offsets = bool(detach_offsets)
         self.return_aux_default = bool(return_aux_default)
         self.use_null_source = bool(use_null_source)
+        self.use_relation_aux = bool(use_relation_aux)
 
         if self.channels <= 0:
             raise ValueError("channels must be positive")
@@ -139,6 +143,33 @@ class PhaseDeformableContextAttention(nn.Module):
                 raise ValueError("Self pair is not allowed: %r" % ((a, b),))
             pair_keys.add(frozenset((a, b)))
 
+        valid_direction_keys = {
+            "%s<-%s" % (target, source)
+            for a, b in self.context_pairs
+            for target, source in ((a, b), (b, a))
+        }
+        if relation_aux_pairs is None:
+            self.relation_aux_pairs = None
+        else:
+            parsed_pairs = tuple(str(pair) for pair in relation_aux_pairs)
+            if self.use_relation_aux and not parsed_pairs:
+                raise ValueError("relation_aux_pairs must not be empty when use_relation_aux=True")
+            if len(set(parsed_pairs)) != len(parsed_pairs):
+                raise ValueError("relation_aux_pairs must not contain duplicates")
+            for direction_key in parsed_pairs:
+                if direction_key.count("<-") != 1:
+                    raise ValueError("Invalid relation_aux pair: %r" % direction_key)
+                target_name, source_name = direction_key.split("<-")
+                if target_name == "__null__" or source_name == "__null__":
+                    raise ValueError("relation_aux_pairs must not contain __null__: %r" % direction_key)
+                if target_name not in self.phase_to_index or source_name not in self.phase_to_index:
+                    raise ValueError("Unknown phase in relation_aux pair: %r" % direction_key)
+                if target_name == source_name:
+                    raise ValueError("Self relation_aux pair is not allowed: %r" % direction_key)
+                if direction_key not in valid_direction_keys:
+                    raise ValueError("relation_aux pair is not present in context_pairs: %r" % direction_key)
+            self.relation_aux_pairs = frozenset(parsed_pairs)
+
         self.source_names_by_target = {}
         for target_name in self.phase_names:
             source_names = [
@@ -153,6 +184,14 @@ class PhaseDeformableContextAttention(nn.Module):
         hidden = int(hidden_channels) if hidden_channels is not None else max(32, self.channels // 2)
         if hidden <= 0:
             raise ValueError("hidden_channels must be positive")
+
+        relation_hidden = (
+            int(relation_aux_hidden_channels)
+            if relation_aux_hidden_channels is not None
+            else hidden
+        )
+        if relation_hidden <= 0:
+            raise ValueError("relation_aux_hidden_channels must be positive")
 
         control_activation = self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads))
         value_activation = self._make_value_activation(
@@ -182,6 +221,18 @@ class PhaseDeformableContextAttention(nn.Module):
             self._make_control_activation(bool(use_stateful_q_if), bool(use_q_if_heads)),
             nn.Conv2d(hidden, self.num_heads * self.num_points, kernel_size=1, bias=True),
         )
+
+        self.relation_aux_head = None
+        if self.use_relation_aux:
+            self.relation_aux_head = nn.Sequential(
+                nn.Conv2d(4 * self.channels, relation_hidden, kernel_size=1, bias=False),
+                _make_norm2d(relation_hidden, norm=norm, num_groups=norm_groups),
+                nn.GELU(),
+                nn.Conv2d(relation_hidden, relation_hidden, kernel_size=3, padding=1, bias=False),
+                _make_norm2d(relation_hidden, norm=norm, num_groups=norm_groups),
+                nn.GELU(),
+                nn.Conv2d(relation_hidden, 1, kernel_size=1, bias=True),
+            )
 
         self.null_logit_head = nn.Sequential(
             nn.Conv2d(self.channels, hidden, kernel_size=1, bias=False),
@@ -235,6 +286,7 @@ class PhaseDeformableContextAttention(nn.Module):
             "attn_weights": {},
             "source_weights": {},
             "joint_weights": {},
+            "relation_logits": {},
         }
 
     @staticmethod
@@ -288,6 +340,7 @@ class PhaseDeformableContextAttention(nn.Module):
         feat: torch.Tensor,
         return_aux: Optional[bool] = None,
         detach_aux: bool = False,
+        relation_aux_only: bool = False,
     ):
         if return_aux is None:
             return_aux = self.return_aux_default
@@ -327,6 +380,18 @@ class PhaseDeformableContextAttention(nn.Module):
                     dim=1,
                 )
 
+                direction_key = "%s<-%s" % (target_name, src_name)
+                if (
+                    collect_aux
+                    and self.relation_aux_head is not None
+                    and (self.relation_aux_pairs is None or direction_key in self.relation_aux_pairs)
+                ):
+                    relation_logit = self.relation_aux_head(evidence)
+                    aux["relation_logits"][direction_key] = self._maybe_detach(
+                        relation_logit,
+                        bool(detach_aux),
+                    )
+
                 offset = self.offset_head(evidence).view(B, self.num_heads, self.num_points, 2, H, W)
                 offset = torch.tanh(offset) * self.offset_radius
                 if self.detach_offsets:
@@ -339,8 +404,7 @@ class PhaseDeformableContextAttention(nn.Module):
                 logits_by_source.append(logits)
                 sampled_by_source.append(sampled)
 
-                if collect_aux:
-                    direction_key = "%s<-%s" % (target_name, src_name)
+                if collect_aux and not relation_aux_only:
                     aux["offsets"][direction_key] = self._maybe_detach(offset, bool(detach_aux))
 
             if len(logits_by_source) == 0:
@@ -356,7 +420,7 @@ class PhaseDeformableContextAttention(nn.Module):
             context = context.contiguous().view(B, C, H, W)
             residual_by_phase[target_idx] = residual_by_phase[target_idx] + self.out_proj(context)
 
-            if collect_aux:
+            if collect_aux and not relation_aux_only:
                 aux["source_weights"][target_name] = self._maybe_detach(joint_weights.sum(dim=3), bool(detach_aux))
                 aux["joint_weights"][target_name] = self._maybe_detach(joint_weights, bool(detach_aux))
                 for q_idx, src_name in enumerate(source_names):

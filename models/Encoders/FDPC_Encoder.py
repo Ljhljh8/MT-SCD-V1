@@ -422,6 +422,7 @@ class FDPCEncoder(nn.Module):
             "pdca_attn_weights": {},
             "pdca_source_weights": {},
             "pdca_joint_weights": {},
+            "pdca_relation_logits": {},
         }
 
     def _resolve_pdca_cfg_for_scale(self, scale_key: str) -> dict:
@@ -524,6 +525,7 @@ class FDPCEncoder(nn.Module):
         feature_xy: Sequence[torch.Tensor],
         return_aux: Optional[bool] = None,
         detach_aux: bool = False,
+        relation_aux_only: bool = False,
     ) -> Tuple[List[torch.Tensor], AuxDict]:
         if return_aux is None:
             return_aux = self.return_aux_default
@@ -569,12 +571,14 @@ class FDPCEncoder(nn.Module):
                     encoded[s],
                     return_aux=bool(return_aux),
                     detach_aux=bool(detach_aux),
+                    relation_aux_only=bool(relation_aux_only),
                 )
                 if return_aux:
                     aux["pdca_offsets"][scale_key] = pdca_aux.get("offsets", {})
                     aux["pdca_attn_weights"][scale_key] = pdca_aux.get("attn_weights", {})
                     aux["pdca_source_weights"][scale_key] = pdca_aux.get("source_weights", {})
                     aux["pdca_joint_weights"][scale_key] = pdca_aux.get("joint_weights", {})
+                    aux["pdca_relation_logits"][scale_key] = pdca_aux.get("relation_logits", {})
             elif self.relation_mode == "none":
                 pass
 

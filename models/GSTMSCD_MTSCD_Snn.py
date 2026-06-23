@@ -4,20 +4,33 @@ from torch import nn
 # from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
 # from models.Backbones.sdtv3 import Spiking_vit_MetaFormerv2  as SDTV3Backbone
 from mmseg.models.backbones import Spiking_vit_MetaFormer as SDTV2Backbone
-from models.Encoders.FDPC_EncoderV1 import FDPCEncoder
+from models.Encoders.FDPC_Encoder import FDPCEncoder
 # from models.SNN_Models_DendFADC import Spiking_vit_MetaFormer
 from functools import partial
 from utils.PAE_NET import PAENTE
 #WUSU最优模型
 norm_cfg = dict(type='SyncBN', requires_grad=True)
 class GSTMSCD_WUSU(nn.Module):
-    def __init__(self, backbone, pretrained, nclass, lightweight, M, Lambda):
+    def __init__(
+        self,
+        backbone,
+        pretrained,
+        nclass,
+        lightweight,
+        M,
+        Lambda,
+        relation_mode="pdca",
+        use_pdca_relation_aux=False,
+        use_pairrel_aux=False,
+    ):
         super(GSTMSCD_WUSU, self).__init__()
         self.backbone_name = backbone
         self.nclass = nclass
         self.lightweight = lightweight
         self.M = M
         self.Lambda = Lambda
+        self.use_pdca_relation_aux = bool(use_pdca_relation_aux)
+        self.use_pairrel_aux = bool(use_pairrel_aux)
         self.T = 2
         self.Expander = PAENTE(c_in=4, c_e=32, K=2, R=0)
         # self.channel_nums = [64, 128, 256, 256, 256]
@@ -141,7 +154,7 @@ class GSTMSCD_WUSU(nn.Module):
                     dend_residual_init=0.0,
                     context_residual_init=0.0,
                     detach_context_gate=False,
-                    relation_mode="pdca",
+                    relation_mode=relation_mode,
                     # relation_mode="pdca",
                     pdca_cfg=dict(
                         num_heads=4,
@@ -149,6 +162,8 @@ class GSTMSCD_WUSU(nn.Module):
                         offset_radius=4.0,
                         use_null_source=True,
                         residual_init=1e-3,
+                        use_relation_aux=self.use_pdca_relation_aux and j == 3,
+                        relation_aux_pairs=("t1<-t3", "t3<-t1"),
                         per_scale={
                             "2": {"offset_radius": 64.0},
                             "3": {"offset_radius": 32.0},
@@ -187,7 +202,7 @@ class GSTMSCD_WUSU(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = True
 
-    def forward(self, x):
+    def forward(self, x, return_aux: bool = False):
         # x, meta = self.Expander(x)
 
         t, b, c, h, w = x.shape
@@ -198,20 +213,37 @@ class GSTMSCD_WUSU(nn.Module):
         # xy_in = x.permute(1, 2, 3, 4, 0).reshape(b, c, h, -1)
         feature_xy = self.backbone(x)
         phase_windows_8_K2_R1 = [[0, 1], [3, 4], [6, 7]]
-        for blk in self.encoder:
-            feature_xy,_ = blk(feature_xy,return_aux=False,)
+        encoder_aux_list = []
+        for index, blk in enumerate(self.encoder):
+            if return_aux and self.use_pdca_relation_aux and index == len(self.encoder) - 1:
+                feature_xy, encoder_aux = blk(
+                    feature_xy,
+                    return_aux=True,
+                    detach_aux=False,
+                    relation_aux_only=True,
+                )
+                encoder_aux_list.append(encoder_aux)
+            else:
+                feature_xy, _ = blk(feature_xy, return_aux=False)
         # upsampled_xy = [4, 8, 16, 32, 32]
         # for idx, feature in enumerate(feature_xy):
         #     feature_xy[idx] = feature.reshape(b, -1, h // upsampled_xy[idx], w // upsampled_xy[idx], t).permute(4, 0, 1, 2, 3)
         # outs = self.decoder(feature_xy, out_size=(h, w), phase_windows=phase_windows_8_K2_R1)
         for blk in self.decoder:
-            outs = blk(feature_xy, input_size=(h, w))
+            outs = blk(feature_xy, input_size=(h, w), return_intermediates=False)
 
 
 
         seg1, seg2, seg3 = outs["sem_logits_dict"]["t1"], outs["sem_logits_dict"]["t2"], outs["sem_logits_dict"]["t3"]
         change13 = outs["chg_logits"]
 
+        if return_aux:
+            aux = {}
+            if self.use_pdca_relation_aux:
+                aux["encoder_aux"] = encoder_aux_list
+            if self.use_pairrel_aux:
+                aux["encoder_features"] = {2: feature_xy[2], 3: feature_xy[3]}
+            return seg1, seg2, seg3, change13.squeeze(1), aux
         return seg1, seg2, seg3, change13.squeeze(1)
 
 if __name__ == '__main__':
