@@ -90,7 +90,7 @@ class GSTMSCD_WUSU(nn.Module):
                 init_cfg=None,
             )
         updated_weights = {}
-        pretrained_weights = torch.load("/root/ljh/GSTM_main/GSTM-SCD_Pretraining-weights/Meta-Spikeformer-15M.pth")
+        pretrained_weights = torch.load('/media/think/data/ljh/Spike2Former-main/Segmentation/Meta-Spikeformer-15M.pth')
         new_dict = pretrained_weights['model']
         # 防止权重不匹配
         for key, value in new_dict.items():

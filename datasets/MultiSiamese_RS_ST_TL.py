@@ -127,7 +127,7 @@ STD_B = np.array([39.687336, 35.002705, 33.52335, 32.46179])
 MEAN_C = np.array([56.94247, 51.62498, 55.48882, 55.334343])
 STD_C = np.array([39.50115, 34.213947, 34.078976, 33.744305])
 # root = '/media/lenovo/课题研究/博士小论文数据/长时序变化检测/Long-term-SCD/wusu512_process/debug_data'
-root = '/home/think/ljh_datasets/WUSU'
+root = '/root/ljh_data/WUSU_data/'
 
 colormap2label = np.zeros(256 ** 3)
 for i, cm in enumerate(ST_COLORMAP):

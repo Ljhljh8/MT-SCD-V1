@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Remote Python 3.10.20 (sftp://think@10.61.62.231:22/home/think/.conda/envs/GSTM-SCD/bin/python3.10)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="snn_ql_1" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.8.20 (sftp://root@219.147.100.43:7122/root/anaconda3/envs/snn_ql_1/bin/python3.8)" project-jdk-type="Python SDK" />
 </project>
