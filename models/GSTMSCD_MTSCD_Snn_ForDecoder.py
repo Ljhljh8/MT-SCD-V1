@@ -4,10 +4,10 @@ from torch import nn
 # from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
 # from models.Backbones.sdtv3 import Spiking_vit_MetaFormerv2  as SDTV3Backbone
 from mmseg.models.backbones import Spiking_vit_MetaFormer as SDTV2Backbone
-from models.Encoders.FDPC_Encoder import FDPCEncoder
+from models.Encoders.FDPC_Encoder_ForDecoder import FDPCEncoder
 # from models.SNN_Models_DendFADC import Spiking_vit_MetaFormer
 from functools import partial
-from utils.PAE_NET import PAENTE
+
 #WUSU最优模型
 norm_cfg = dict(type='SyncBN', requires_grad=True)
 class GSTMSCD_WUSU(nn.Module):
@@ -16,9 +16,9 @@ class GSTMSCD_WUSU(nn.Module):
         backbone,
         pretrained,
         nclass,
-        lightweight,
-        M,
-        Lambda,
+        # lightweight,
+        # M,
+        # Lambda,
         relation_mode="pdca",
         use_pdca_relation_aux=False,
         use_pairrel_aux=False,
@@ -29,9 +29,8 @@ class GSTMSCD_WUSU(nn.Module):
         super(GSTMSCD_WUSU, self).__init__()
         self.backbone_name = backbone
         self.nclass = nclass
-        self.lightweight = lightweight
-        self.M = M
-        self.Lambda = Lambda
+        # self.lightweight = lightweight
+
         self.use_pdca_relation_aux = bool(use_pdca_relation_aux)
         self.use_pairrel_aux = bool(use_pairrel_aux)
         self.relation_mode = relation_mode
@@ -46,8 +45,7 @@ class GSTMSCD_WUSU(nn.Module):
             raise RuntimeError(
                 "PDCA-guided pair decoder requires relation_mode='pdca' unless PDCA guidance is disabled."
             )
-        self.T = 2
-        self.Expander = PAENTE(c_in=4, c_e=32, K=2, R=0)
+
         # self.channel_nums = [64, 128, 256, 256, 256]
         self.channel_nums = [32, 64, 128, 360]
 
@@ -90,7 +88,7 @@ class GSTMSCD_WUSU(nn.Module):
                 init_cfg=None,
             )
         updated_weights = {}
-        pretrained_weights = torch.load('/media/think/data/ljh/Spike2Former-main/Segmentation/Meta-Spikeformer-15M.pth')
+        pretrained_weights = torch.load('./GSTM-SCD_Pretraining-weights/Meta-Spikeformer-15M.pth')
         new_dict = pretrained_weights['model']
         # 防止权重不匹配
         for key, value in new_dict.items():
@@ -221,16 +219,9 @@ class GSTMSCD_WUSU(nn.Module):
             param.requires_grad = True
 
     def forward(self, x, return_aux: bool = False):
-        # x, meta = self.Expander(x)
-
         t, b, c, h, w = x.shape
-
-        # xy_in = torch.empty(b, c, h, 8 * w).cuda()
-        # for i in range(t):
-        #     xy_in[:, :, :, w*i:w*(i+1)] = x[i]
-        # xy_in = x.permute(1, 2, 3, 4, 0).reshape(b, c, h, -1)
         feature_xy = self.backbone(x)
-        phase_windows_8_K2_R1 = [[0, 1], [3, 4], [6, 7]]
+
         encoder_aux_list = []
         pdca_aux = None
         for index, blk in enumerate(self.encoder):

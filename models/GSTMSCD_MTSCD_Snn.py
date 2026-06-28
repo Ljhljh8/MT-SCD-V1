@@ -16,28 +16,43 @@ class GSTMSCD_WUSU(nn.Module):
         backbone,
         pretrained,
         nclass,
-        lightweight,
-        M,
-        Lambda,
+        # lightweight,
+        # Lambda,
         relation_mode="pdca",
         use_pdca_relation_aux=False,
         use_pairrel_aux=False,
         use_pdca_guided_pair_decoder=False,
         detach_pdca_guidance=True,
         use_pdca_guidance=True,
+
+        pdca_context_spike_mode="none",
+        pdca_context_spike_capacity=8,
+        pdca_context_spike_threshold=1.0,
+        pdca_context_spike_signed=True,
+        pdca_context_spike_detach=False,
+        pdca_context_spike_topk=2,
+        pdca_context_spike_tau=1.0,
+        pdca_context_spike_stats=True,
     ):
         super(GSTMSCD_WUSU, self).__init__()
         self.backbone_name = backbone
         self.nclass = nclass
-        self.lightweight = lightweight
-        self.M = M
-        self.Lambda = Lambda
+
+        # self.Lambda = Lambda
         self.use_pdca_relation_aux = bool(use_pdca_relation_aux)
         self.use_pairrel_aux = bool(use_pairrel_aux)
         self.relation_mode = relation_mode
         self.use_pdca_guided_pair_decoder = bool(use_pdca_guided_pair_decoder)
         self.detach_pdca_guidance = bool(detach_pdca_guidance)
         self.use_pdca_guidance = bool(use_pdca_guidance)
+        self.pdca_context_spike_mode = str(pdca_context_spike_mode)
+        self.pdca_context_spike_capacity = int(pdca_context_spike_capacity)
+        self.pdca_context_spike_threshold = float(pdca_context_spike_threshold)
+        self.pdca_context_spike_signed = bool(pdca_context_spike_signed)
+        self.pdca_context_spike_detach = bool(pdca_context_spike_detach)
+        self.pdca_context_spike_topk = int(pdca_context_spike_topk)
+        self.pdca_context_spike_tau = float(pdca_context_spike_tau)
+        self.pdca_context_spike_stats = bool(pdca_context_spike_stats)
         if (
             self.use_pdca_guided_pair_decoder
             and self.use_pdca_guidance
@@ -46,9 +61,6 @@ class GSTMSCD_WUSU(nn.Module):
             raise RuntimeError(
                 "PDCA-guided pair decoder requires relation_mode='pdca' unless PDCA guidance is disabled."
             )
-        self.T = 2
-        self.Expander = PAENTE(c_in=4, c_e=32, K=2, R=0)
-        # self.channel_nums = [64, 128, 256, 256, 256]
         self.channel_nums = [32, 64, 128, 360]
 
         if backbone == "sdtv2":
@@ -179,6 +191,14 @@ class GSTMSCD_WUSU(nn.Module):
                         residual_init=1e-3,
                         use_relation_aux=self.use_pdca_relation_aux and j == 3,
                         relation_aux_pairs=("t1<-t3", "t3<-t1"),
+                        pdca_context_spike_mode=self.pdca_context_spike_mode,
+                        pdca_context_spike_capacity=self.pdca_context_spike_capacity,
+                        pdca_context_spike_threshold=self.pdca_context_spike_threshold,
+                        pdca_context_spike_signed=self.pdca_context_spike_signed,
+                        pdca_context_spike_detach=self.pdca_context_spike_detach,
+                        pdca_context_spike_topk=self.pdca_context_spike_topk,
+                        pdca_context_spike_tau=self.pdca_context_spike_tau,
+                        pdca_context_spike_stats=self.pdca_context_spike_stats,
                         per_scale={
                             "2": {"offset_radius": 64.0},
                             "3": {"offset_radius": 32.0},
@@ -221,7 +241,6 @@ class GSTMSCD_WUSU(nn.Module):
             param.requires_grad = True
 
     def forward(self, x, return_aux: bool = False):
-        # x, meta = self.Expander(x)
 
         t, b, c, h, w = x.shape
 

@@ -414,7 +414,8 @@ class MaskedBCEDiceLoss(nn.Module):
         super().__init__()
         self.dice_weight = float(dice_weight)
         self.eps = float(eps)
-
+        self.bceloss = nn.BCEWithLogitsLoss(reduction='none')
+        self.dice_loss = DiceLoss()
     def forward(self, logits, target, valid):
         logits = _as_bchw(logits, "logits").float()
         target = _as_bchw(target, "target").float()
@@ -426,13 +427,18 @@ class MaskedBCEDiceLoss(nn.Module):
         if valid_sum.item() <= 0.0:
             return logits.sum() * 0.0
 
-        loss_map = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-        loss_bce = (loss_map * valid).sum() / valid_sum.clamp_min(1.0)
-        prob = torch.sigmoid(logits) * valid
-        target = target * valid
-        inter = (prob * target).sum()
-        denom = prob.sum() + target.sum()
-        loss_dice = 1.0 - (2.0 * inter + self.eps) / (denom + self.eps)
+        # loss_map = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+        # loss_bce = (loss_map * valid).sum() / valid_sum.clamp_min(1.0)
+        loss_bce = self.bceloss(logits, target)
+        loss_bce[target == 1] *= 2
+        loss_bce = loss_bce.mean()
+        # loss_dice = self.dice_loss(torch.sigmoid(logits), target)
+        loss_dice = self.dice_loss(logits, target)
+        # prob = torch.sigmoid(logits) * valid
+        # target = target * valid
+        # inter = (prob * target).sum()
+        # denom = prob.sum() + target.sum()
+        # loss_dice = 1.0 - (2.0 * inter + self.eps) / (denom + self.eps)
         return loss_bce + self.dice_weight * loss_dice
 
 
@@ -440,7 +446,7 @@ class PairwiseBinaryChangeLoss(nn.Module):
     def __init__(
         self,
         pairs: Sequence[Tuple[str, str]] = PAIRWISE_CHANGE_PAIRS,
-        lambda_adj: float = 0.5,
+        lambda_adj: float = 1.0,
         lambda_13: float = 1.0,
         dice_weight: float = 1.0,
     ):
@@ -476,7 +482,8 @@ class PairwiseBinaryChangeLoss(nn.Module):
         if not losses:
             first_logit = next(iter(change_logits_dict.values()))
             return first_logit.float().sum() * 0.0, stats
-        return torch.stack(losses).sum(), stats
+        # return torch.stack(losses).sum(), stats
+        return torch.stack(losses).mean(), stats
 
 
 def weighted_BCE_logits(logit_pixel, truth_pixel, weight_pos=0.25, weight_neg=0.75):

@@ -129,6 +129,7 @@ class DendriticScaleAdapter(nn.Module):
         padding_mode: str = "repeat",
         dend_soma_type: str = "q_if",
         dend_soma_cfg: Optional[dict] = None,
+        Down_K: bool = False,
     ):
         super().__init__()
         self.channels = int(channels)
@@ -178,6 +179,7 @@ class DendriticScaleAdapter(nn.Module):
             fs_cfg=default_fs_cfg,
             calculate_next_k=True,
             SN_CLS=True,
+            Down_K=Down_K
         )
 
         self.post_norm = _make_norm2d(self.channels, norm=norm, num_groups=norm_groups)
@@ -358,7 +360,7 @@ class FDPCEncoder(nn.Module):
                 raise ValueError(f"Unknown phase pair {(a, b)} for phase_names={self.phase_names}")
             if a == b:
                 raise ValueError(f"Self pair is not allowed: {(a, b)}")
-
+        Down_K = [True, True, True, False]
         self.scale_adapters = nn.ModuleList()
         for s, channels in enumerate(self.in_channels):
             self.scale_adapters.append(
@@ -375,6 +377,7 @@ class FDPCEncoder(nn.Module):
                     kernel_decompose=kernel_decompose,
                     dend_soma_type=dend_soma_type,
                     dend_soma_cfg=dend_soma_cfg,
+                    Down_K=Down_K[s],
                 )
             )
 
@@ -535,7 +538,7 @@ class FDPCEncoder(nn.Module):
             raise ValueError(
                 f"Expected {self.num_scales} feature scales, got {len(feature_xy)}"
             )
-
+        K_GATE: List[torch.Tensor] = []
         encoded: List[torch.Tensor] = []
         K = None
         for s, (feat, adapter) in enumerate(zip(feature_xy, self.scale_adapters)):
@@ -553,6 +556,8 @@ class FDPCEncoder(nn.Module):
                 feat_i, K = adapter(feat, K=K)
             else:
                 feat_i = adapter(feat)
+            if s in self.relation_scales:
+                K_GATE.append(K)
             encoded.append(feat_i)
 
         aux = self._new_aux()

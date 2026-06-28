@@ -4,6 +4,9 @@ import argparse
 import math
 import os
 import random
+from datetime import datetime
+import sys
+
 try:
     from contextlib import nullcontext
 except ImportError:
@@ -33,6 +36,81 @@ except ModuleNotFoundError:
 
 
 working_path = os.path.dirname(os.path.abspath(__file__))
+def default_log_dir(args):
+    return os.path.join(
+        working_path,
+        "logs",
+        args.data_name,
+        args.Net_name,
+        args.backbone + "_v6",
+    )
+
+
+class TeeStream:
+    """Write console output to both terminal and a log file."""
+
+    def __init__(self, primary, secondary):
+        self.primary = primary
+        self.secondary = secondary
+
+    def write(self, data):
+        self.primary.write(data)
+        self.secondary.write(data)
+        return len(data)
+
+    def flush(self):
+        self.primary.flush()
+        self.secondary.flush()
+
+    def isatty(self):
+        return getattr(self.primary, "isatty", lambda: False)()
+
+    @property
+    def encoding(self):
+        return getattr(self.primary, "encoding", "utf-8")
+
+    def __getattr__(self, name):
+        return getattr(self.primary, name)
+
+
+def setup_text_log(args):
+    """Create a timestamped text log and tee stdout/stderr on the main process."""
+    if not getattr(args, "save_text_log", True):
+        return None
+    if not is_main_process(args):
+        return None
+
+    base_log_dir = args.text_log_dir
+    if base_log_dir is None:
+        base_log_dir = os.path.join(args.log_dir or default_log_dir(args), "text_logs")
+
+    os.makedirs(base_log_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    log_path = os.path.join(base_log_dir, f"train_{timestamp}.log")
+
+    log_file = open(log_path, mode="a", buffering=1, encoding="utf-8")
+
+    sys.stdout = TeeStream(sys.__stdout__, log_file)
+    sys.stderr = TeeStream(sys.__stderr__, log_file)
+
+    args.text_log_path = log_path
+    print("Text log file: %s" % log_path, flush=True)
+    print("Command: %s" % " ".join(sys.argv), flush=True)
+
+    return log_file
+
+
+def close_text_log(log_file):
+    if log_file is None:
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    finally:
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+        log_file.close()
 
 
 class FloatTupleAction(argparse.Action):
@@ -57,7 +135,7 @@ def build_parser():
     parser.add_argument("--Net_name", "--net-name", dest="Net_name", type=str, default="GSTMSCD")
     parser.add_argument("--backbone", type=str, default="sdtv2")
     parser.add_argument("--data_root", "--data-root", dest="data_root", type=str, default=None)
-    parser.add_argument("--log_dir", "--log-dir", dest="log_dir", type=str, default=None)
+    # parser.add_argument("--log_dir", "--log-dir", dest="log_dir", type=str, default=None)
     parser.add_argument("--output_dir", "--output-dir", dest="output_dir", type=str, default="checkpoints_v6")
     parser.add_argument("--batch_size", "--batch-size", dest="batch_size", type=int, default=2)
     parser.add_argument("--val_batch_size", "--val-batch-size", dest="val_batch_size", type=int, default=2)
@@ -66,13 +144,19 @@ def build_parser():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_only", "--eval-only", dest="eval_only", action="store_true")
 
-    parser.add_argument("--lightweight", dest="lightweight", action="store_true")
+    parser.add_argument("--log_dir", "--log-dir", dest="log_dir", type=str, default=None)
+    parser.add_argument("--text_log_dir", "--text-log-dir", dest="text_log_dir", type=str, default=None)
+    parser.add_argument("--save-text-log", dest="save_text_log", action="store_true")
+    parser.add_argument("--no-save-text-log", dest="save_text_log", action="store_false")
+    parser.set_defaults(save_text_log=True)
+
+    # parser.add_argument("--lightweight", dest="lightweight", action="store_true")
     parser.add_argument("--pretrain_from", "--pretrain-from", dest="pretrain_from", type=str, default=None)
     parser.add_argument("--load_from", "--load-from", dest="load_from", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--pretrained", type=str2bool, default=True)
-    parser.add_argument("--M", type=int, default=6)
-    parser.add_argument("--Lambda", type=float, default=0.00005)
+
+    # parser.add_argument("--Lambda", type=float, default=0.00005)
     parser.add_argument("--relation-mode", choices=["prg", "pdca", "none"], default="pdca")
     parser.add_argument("--enable-pairrel-aux", action="store_true")
     parser.add_argument(
@@ -103,7 +187,7 @@ def build_parser():
     parser.add_argument("--use-pdca-guided-pair-decoder", action="store_true")
     parser.add_argument("--no-pdca-guidance", action="store_true")
     parser.add_argument("--no-detach-pdca-guidance", action="store_true")
-    parser.add_argument("--pair-bcd-lambda-adj", type=float, default=0.5)
+    parser.add_argument("--pair-bcd-lambda-adj", type=float, default=1.0)
     parser.add_argument("--pair-bcd-lambda-13", type=float, default=1.0)
     parser.add_argument("--pair-bcd-dice-weight", type=float, default=1.0)
 
@@ -158,6 +242,17 @@ def build_parser():
     parser.add_argument("--local_rank", "--local-rank", dest="local_rank", type=int, default=0)
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--world_size", "--world-size", dest="world_size", type=int, default=1)
+
+    parser.add_argument("--pdca-context-spike-mode", default="none",
+                        choices=["none", "weights", "values", "both", "context"])
+    parser.add_argument("--pdca-context-spike-capacity", default=8, type=int)
+    parser.add_argument("--pdca-context-spike-threshold", default=1.0, type=float)
+    parser.add_argument("--pdca-context-spike-signed", type=str2bool, default=True)
+    parser.add_argument("--pdca-context-spike-detach", action="store_true")
+    parser.add_argument("--pdca-context-spike-topk", default=2, type=int)
+    parser.add_argument("--pdca-context-spike-tau", default=1.0, type=float)
+    parser.add_argument("--pdca-context-spike-warmup-epoch", default=0, type=int)
+
     return parser
 
 
@@ -184,6 +279,16 @@ def validate_args(args):
         raise ValueError("--epochs must be >= 1")
     if args.lr < 0 or args.weight_decay < 0 or args.grad_clip_norm < 0:
         raise ValueError("lr, weight decay, and grad clip must be non-negative")
+    if args.pdca_context_spike_capacity <= 0:
+        raise ValueError("--pdca-context-spike-capacity must be > 0")
+    if args.pdca_context_spike_threshold <= 0:
+        raise ValueError("--pdca-context-spike-threshold must be > 0")
+    if args.pdca_context_spike_topk <= 0:
+        raise ValueError("--pdca-context-spike-topk must be > 0")
+    if args.pdca_context_spike_tau <= 0:
+        raise ValueError("--pdca-context-spike-tau must be > 0")
+    if args.pdca_context_spike_warmup_epoch < 0:
+        raise ValueError("--pdca-context-spike-warmup-epoch must be >= 0")
 
     if args.reference_total_updates is not None and args.reference_total_updates < 1:
         raise ValueError("--reference-total-updates must be >= 1")
@@ -239,6 +344,12 @@ def validate_args(args):
         args.enable_pairrel_aux = False
     if torch is not None and args.amp and not torch.cuda.is_available():
         args.amp = False
+
+def set_pdca_context_spike_mode(model, mode: str):
+    module = model.module if hasattr(model, "module") else model
+    for m in module.modules():
+        if hasattr(m, "pdca_context_spike_runtime_mode"):
+            m.pdca_context_spike_runtime_mode = mode
 
 
 def should_update_optimizer(step, num_steps, accum_steps):
@@ -614,15 +725,24 @@ def build_model(args, RS, device):
         args.backbone,
         args.pretrained,
         len(RS.ST_CLASSES),
-        args.lightweight,
-        args.M,
-        args.Lambda,
+        # args.lightweight,
+        # args.M,
+        # args.Lambda,
         relation_mode=args.relation_mode,
         use_pdca_relation_aux=args.pdca_aux,
         use_pairrel_aux=args.enable_pairrel_aux,
         use_pdca_guided_pair_decoder=args.use_pdca_guided_pair_decoder,
         detach_pdca_guidance=not args.no_detach_pdca_guidance,
         use_pdca_guidance=not args.no_pdca_guidance,
+
+        # pdca_context_spike_mode=args.pdca_context_spike_mode,
+        # pdca_context_spike_capacity=args.pdca_context_spike_capacity,
+        # pdca_context_spike_threshold=args.pdca_context_spike_threshold,
+        # pdca_context_spike_signed=args.pdca_context_spike_signed,
+        # pdca_context_spike_detach=args.pdca_context_spike_detach,
+        # pdca_context_spike_topk=args.pdca_context_spike_topk,
+        # pdca_context_spike_tau=args.pdca_context_spike_tau,
+        # pdca_context_spike_stats=True,
     )
     if is_main_process(args):
         if args.use_pdca_guided_pair_decoder:
@@ -728,13 +848,18 @@ def compute_losses(outputs, masks, criteria, pair_targets=None, change_logits_di
     loss2 = criteria["seg"](out2.float(), mask2 - 1)
     loss3 = criteria["seg"](out3.float(), mask3 - 1)
     loss_seg = (loss1 + loss2 + loss3) / 3
-    loss_similarity = criteria["similarity"](out1.float(), out3.float(), mask_bn)
+    # loss_similarity = criteria["similarity"](out1.float(), out3.float(), mask_bn)
     pair_bcd_stats = {}
     if criteria.get("pair_bcd") is not None:
         if pair_targets is None or change_logits_dict is None:
             raise RuntimeError("pairwise BCD loss requires pair_targets and change_logits_dict")
+        loss_similarity_1 = criteria["similarity"](out1.float(), out2.float(), pair_targets["t1_to_t2"]["target"])
+        loss_similarity_2 = criteria["similarity"](out2.float(), out3.float(), pair_targets["t2_to_t3"]["target"])
+        loss_similarity_3 = criteria["similarity"](out1.float(), out3.float(), pair_targets["t1_to_t3"]["target"])
+        loss_similarity = (loss_similarity_1+loss_similarity_2+loss_similarity_3).mean()
         loss_bn, pair_bcd_stats = criteria["pair_bcd"](change_logits_dict, pair_targets)
     else:
+        loss_similarity = criteria["similarity"](out1.float(), out3.float(), mask_bn)
         loss_bn = compute_binary_change_loss(change_logits, mask_bn, criteria["bce"], criteria["dice"])
     loss = loss_bn + loss_seg + loss_similarity
     loss_tl = torch.zeros((), device=loss.device, dtype=loss.dtype)
@@ -849,6 +974,11 @@ def train_one_epoch(ctx, epoch):
     iterator = ctx.tqdm(ctx.trainloader) if is_main_process(args) else ctx.trainloader
     ctx.optimizer.zero_grad(set_to_none=True)
     warned_c13_mismatch = False
+    # epoch loop
+    if epoch < args.pdca_context_spike_warmup_epoch:
+        set_pdca_context_spike_mode(ctx.model, "none")
+    else:
+        set_pdca_context_spike_mode(ctx.model, args.pdca_context_spike_mode)
 
     for step, (img1, img2, img3, mask1, mask2, mask3, mask_bn, sample_id) in enumerate(iterator):
         del sample_id
@@ -1081,6 +1211,55 @@ def train_one_epoch(ctx, epoch):
                 if args.amp:
                     add_finite_scalar(ctx.writer, "amp scale", last_amp_scale, running_iter)
                     add_finite_scalar(ctx.writer, "amp skipped_steps", amp_skipped_steps, running_iter)
+    if is_main_process(args):
+        denom = max(1, total_micro_batches)
+        summary = (
+            "TRAIN_EPOCH_SUMMARY epoch=%d, loss=%.6f, seg=%.6f, bn=%.6f, "
+            "similarity=%.6f, tl=%.6f, lr=%.8g, grad_norm=%.6f"
+            % (
+                epoch,
+                totals["loss"] / denom,
+                totals["seg"] / denom,
+                totals["bn"] / denom,
+                totals["similarity"] / denom,
+                totals["tl"] / denom,
+                ctx.optimizer.param_groups[0]["lr"],
+                last_grad_norm,
+            )
+        )
+        if args.enable_pairrel_aux:
+            summary += (
+                ", pairrel=%.6f, pairrel_effective=%.6f, pairrel_warm=%.6f"
+                % (
+                    totals["pairrel"] / denom,
+                    totals["pairrel_effective"] / denom,
+                    totals["pairrel_warm"] / denom,
+                )
+            )
+        if args.pdca_aux:
+            summary += (
+                ", pdca_aux=%.6f, pdca_aux_weight_eff=%.6f"
+                % (
+                    totals["pdca_aux_loss"] / denom,
+                    totals["pdca_aux_weight_eff"] / denom,
+                )
+            )
+        if args.use_pdca_guided_pair_decoder:
+            summary += ", Loss_pair_bcd: %.3f, C13_mismatch: %.3f" % (
+                totals["pair_bcd"] / seen,
+                totals["pair_bcd_c13_mismatch_ratio"] / seen,
+            )
+            if totals["pair_bcd_c13_mismatch_ratio"] / seen > 0.2:
+                description += ", NEEDS_DATA_AUDIT"
+            for key in pair_bcd_stat_keys + gate_stat_keys:
+                description += ", %s: %.3f" % (key, totals[key] / seen)
+
+        if args.amp:
+            summary += ", amp_scale=%.1f, amp_skipped_steps=%d" % (
+                last_amp_scale,
+                amp_skipped_steps,
+            )
+        print(summary, flush=True)
 
 
 def validate_t1_t3(ctx, epoch):
@@ -1127,6 +1306,12 @@ def validate_t1_t3(ctx, epoch):
             )
 
     save_checkpoint(ctx, epoch, score, miou, sek, fscd, oa)
+    print(
+        "VAL_EPOCH_SUMMARY epoch=%d, score=%.6f, miou=%.6f, sek=%.6f, "
+        "Fscd=%.6f, OA=%.6f, SC_Precision=%.6f, SC_Recall=%.6f"
+        % (epoch, score, miou, sek, fscd, oa, sc_precision, sc_recall),
+        flush=True,
+    )
     if ctx.writer is not None:
         add_finite_scalar(ctx.writer, "val_Score", score, epoch)
         add_finite_scalar(ctx.writer, "val_mIOU", miou, epoch)
@@ -1152,6 +1337,8 @@ def checkpoint_payload(ctx, epoch):
         "scaler": ctx.scaler.state_dict() if ctx.args.amp else None,
         "scheduler": scheduler_state_dict(ctx.scheduler),
         "best_metric": ctx.previous_best,
+        # "best_epoch": getattr(ctx, "best_epoch", -1),
+        # "best_metrics": getattr(ctx, "best_metrics", {}),
         "global_update_step": ctx.global_update_step,
         "args": vars(ctx.args),
     }
@@ -1224,16 +1411,24 @@ def step_scheduler_epoch(ctx, epoch, metric):
     step_timm_scheduler_epoch(ctx.scheduler, epoch + 1, scheduler_metric)
 
 
+# def make_writer(args):
+#     if not is_main_process(args):
+#         return None
+#     if args.log_dir is None:
+#         args.log_dir = os.path.join(working_path, "logs", args.data_name, args.Net_name, args.backbone + "_v6")
+#     os.makedirs(args.log_dir, exist_ok=True)
+#     from tensorboardX import SummaryWriter
+#
+#     return SummaryWriter(args.log_dir)
 def make_writer(args):
     if not is_main_process(args):
         return None
     if args.log_dir is None:
-        args.log_dir = os.path.join(working_path, "logs", args.data_name, args.Net_name, args.backbone + "_v6")
+        args.log_dir = default_log_dir(args)
     os.makedirs(args.log_dir, exist_ok=True)
     from tensorboardX import SummaryWriter
 
     return SummaryWriter(args.log_dir)
-
 
 def print_startup(args, train_micro_batches, updates_per_epoch, actual_updates, total_updates, warmup_updates):
     if not is_main_process(args):
@@ -1274,9 +1469,12 @@ def main(argv=None):
     from tqdm import tqdm
     from utils.metric import IOUandSek
 
+    text_log_file = None
     writer = None
     ctx = None
     try:
+        text_log_file = setup_text_log(args)
+
         device = torch.device(f"cuda:{args.local_rank}" if torch.cuda.is_available() else "cpu")
         RS, trainset, trainloader, train_sampler, valloader = build_dataloaders(args)
         model = build_model(args, RS, device)
@@ -1346,6 +1544,7 @@ def main(argv=None):
         if writer is not None:
             writer.close()
         cleanup_distributed()
+        close_text_log(text_log_file)
 
 
 if __name__ == "__main__":
