@@ -884,4 +884,3 @@ if __name__ == "__main__":
     print("sem_logits_dict[t1] shape:", outputs["sem_logits_dict"]["t1"].shape)
     print("resolved phase_windows:", outputs["phase_windows"])
     print("resolved transition_windows:", outputs["transition_windows"])
- 

@@ -1,4 +1,4 @@
-from models.Decoders.Snn_Mtscd_Decoder_V2_direct import MTSCDDecoderNet
+from models.Decoders.Snn_Mtscd_Decoder_V4 import MTSCDDecoderNet
 import torch
 from torch import nn
 # from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
