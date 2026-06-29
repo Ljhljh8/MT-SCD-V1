@@ -719,7 +719,7 @@ def build_dataloaders(args):
 
 def build_model(args, RS, device):
     # from models.GSTMSCD_MTSCD_Snn import GSTMSCD_WUSU as Net
-    from models.GSTMSCD_MTSCD_Snn import GSTMSCD_WUSU as Net
+    from models.GSTMSCD_MTSCD_Snn_ForDecoder import GSTMSCD_WUSU as Net
 
     model = Net(
         args.backbone,

@@ -457,8 +457,8 @@ class Q_IFNode(BaseNode):
         self.cupy_fp32_inference = cupy_fp32_inference
 
     def neuronal_charge(self, x: torch.Tensor):
-        self.v = self.v + x
-
+        self.v = x
+        # raise NotImplementedError
     def forward(self, x: torch.Tensor):
         if self.cupy_fp32_inference and cupy is not None and not self.training and x.dtype == torch.float32:
             # cupy is installed && eval mode && fp32

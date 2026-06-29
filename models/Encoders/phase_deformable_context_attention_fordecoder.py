@@ -199,7 +199,8 @@ class PhaseDeformableContextAttention(nn.Module):
 
         pdca_context_spike_topk: int = 2,
         pdca_context_spike_tau: float = 1.0,
-        pdca_context_spike_warmup_epoch: int = 0  # 训练脚本控制更合适
+        pdca_context_spike_warmup_epoch: int = 0,  # 训练脚本控制更合适
+        alpha = 1e-3
     ):
         super().__init__()
         self.channels = int(channels)
@@ -346,7 +347,7 @@ class PhaseDeformableContextAttention(nn.Module):
         )
         nn.init.zeros_(self.offset_head[-1].weight)
         nn.init.zeros_(self.offset_head[-1].bias)
-
+        self.alpha = nn.Parameter(torch.tensor(float(alpha)))
         self.attn_head = nn.Sequential(
             nn.Conv2d(4 * self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
@@ -472,10 +473,18 @@ class PhaseDeformableContextAttention(nn.Module):
         return sampled.view(B, G, K, Cg, H, W)
 
 
+    def _apply_dendritic_logit_prior(self, logits, target_idx, source_idx, offset, dendritic_guidance, H, W):
 
+        D_t = dendritic_guidance[target_idx]  # [B,1,H,W]
+        D_s = dendritic_guidance[source_idx]  # [B,1,H,W]
+
+        prior = -torch.abs(D_t - D_s)  # [B,1,H,W]
+        logits = logits + self.alpha * prior.unsqueeze(1)
+        return logits
     def forward(
         self,
         feat: torch.Tensor,
+        K_GATE: torch.Tensor,
         return_aux: Optional[bool] = None,
         detach_aux: bool = False,
         relation_aux_only: bool = False,
@@ -549,10 +558,23 @@ class PhaseDeformableContextAttention(nn.Module):
                 offset = torch.tanh(offset) * self.offset_radius
                 if self.detach_offsets:
                     offset = offset.detach()
-
+                dendritic_guidance = torch.cat(K_GATE, dim=1).reshape(N, B, -1, H, W).mean(dim=2,
+                                                                                                       keepdim=True)
                 logits = self.attn_head(evidence).view(B, self.num_heads, self.num_points, H, W)
+                logits = self._apply_dendritic_logit_prior(
+                    logits=logits,
+                    target_idx=target_idx,
+                    source_idx=src_idx,
+                    offset=offset,
+                    dendritic_guidance=dendritic_guidance,
+                    H=H,
+                    W=W,
+                )
                 value = self.value_proj(source)
                 sampled = self._deformable_sample_vectorized(value, offset)
+
+
+
 
                 logits_by_source.append(logits)
                 sampled_by_source.append(sampled)

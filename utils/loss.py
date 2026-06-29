@@ -384,7 +384,8 @@ def make_pairwise_change_targets(
         if yi.shape != yj.shape or yi.ndim != 3:
             raise ValueError("semantic targets for %s/%s must match [B,H,W]" % (phase_i, phase_j))
         valid = (yi != ignore_index) & (yj != ignore_index)
-        target = ((yi != yj) & valid).float().unsqueeze(1)
+        target = ((yi != yj)).float().unsqueeze(1)
+        # target = ((yi != yj) & valid).float().unsqueeze(1)
         out[_pair_key((phase_i, phase_j))] = {
             "target": target,
             "valid": valid.float().unsqueeze(1),
@@ -423,9 +424,9 @@ class MaskedBCEDiceLoss(nn.Module):
         if logits.shape != target.shape or logits.shape != valid.shape:
             raise ValueError("logits, target, and valid must have the same [B,1,H,W] shape")
 
-        valid_sum = valid.sum()
-        if valid_sum.item() <= 0.0:
-            return logits.sum() * 0.0
+        # valid_sum = valid.sum()
+        # if valid_sum.item() <= 0.0:
+        #     return logits.sum() * 0.0
 
         # loss_map = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
         # loss_bce = (loss_map * valid).sum() / valid_sum.clamp_min(1.0)

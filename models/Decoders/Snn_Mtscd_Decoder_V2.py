@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 from mmseg.Qtrick_architecture.clock_driven.neuron import Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
@@ -453,240 +453,6 @@ class ChangeDecoder(nn.Module):
         return x, multi_scale_change_inputs         # x: [B, D, H_0, W_0]
 
 
-class PDCASpatialGate(nn.Module):
-    """PDCA guidance [B,4,H,W] -> spatial gate [B,1,H,W]."""
-
-    def __init__(self, r_channels: int = 4, init_bias: float = 0.0):
-        super().__init__()
-        self.r_channels = int(r_channels)
-        self.conv = nn.Conv2d(self.r_channels, 1, kernel_size=1)
-        nn.init.zeros_(self.conv.weight)
-        nn.init.constant_(self.conv.bias, float(init_bias))
-
-    def forward(self, r: torch.Tensor) -> torch.Tensor:
-        if r.ndim != 4 or r.shape[1] != self.r_channels:
-            raise ValueError(
-                "PDCASpatialGate expects [B,%d,H,W], got %r"
-                % (self.r_channels, tuple(r.shape))
-            )
-        return torch.sigmoid(self.conv(r))
-
-
-class PDCAGuidedPairwiseChangeDecoder(nn.Module):
-    """
-    phase_feats[phase][s]: [B,C_s,H_s,W_s]
-    pdca guidance R_ij_s: [B,4,H_s,W_s]
-    output logits: fixed pairs [B,1,H,W] for t1_to_t2/t2_to_t3/t1_to_t3
-    """
-
-    FIXED_PAIR_KEYS = ("t1_to_t2", "t2_to_t3", "t1_to_t3")
-
-    def __init__(
-        self,
-        in_channels: Sequence[int],
-        decoder_channels: int,
-        num_change_classes: int = 1,
-        pair_names: Sequence[Tuple[str, str]] = (
-            ("t1", "t2"),
-            ("t2", "t3"),
-            ("t1", "t3"),
-        ),
-        phase_names: Sequence[str] = ("t1", "t2", "t3"),
-        detach_pdca_guidance: bool = True,
-        use_pdca_guidance: bool = True,
-        alpha_max: float = 1.0,
-    ):
-        super().__init__()
-        self.in_channels = list(map(int, in_channels))
-        self.decoder_channels = int(decoder_channels)
-        self.num_change_classes = int(num_change_classes)
-        self.pair_names = tuple((str(a), str(b)) for a, b in pair_names)
-        self.phase_names = tuple(str(name) for name in phase_names)
-        self.detach_pdca_guidance = bool(detach_pdca_guidance)
-        self.use_pdca_guidance = bool(use_pdca_guidance)
-        self.alpha_max = float(alpha_max)
-        self.pair_keys = tuple("%s_to_%s" % pair for pair in self.pair_names)
-
-        if self.pair_keys != self.FIXED_PAIR_KEYS:
-            raise ValueError("pair order must be %r, got %r" % (self.FIXED_PAIR_KEYS, self.pair_keys))
-        if self.alpha_max < 0.0:
-            raise ValueError("alpha_max must be non-negative")
-
-        self.diff_proj = nn.ModuleList([
-            nn.Conv2d(3 * c, self.decoder_channels, kernel_size=1, bias=False)
-            for c in self.in_channels
-        ])
-        self.spatial_gates = nn.ModuleList([
-            PDCASpatialGate(r_channels=4) for _ in self.in_channels
-        ])
-        self.raw_gate_scales = nn.ParameterList([
-            nn.Parameter(torch.full((1,), -4.0)) for _ in self.in_channels
-        ])
-        self.deep_block = DendBlock(self.decoder_channels, self.decoder_channels)
-        self.up_blocks = nn.ModuleList([
-            UpFuseBlock(self.decoder_channels, self.decoder_channels, self.decoder_channels, use_DendSize=16)
-            for _ in range(len(self.in_channels) - 1)
-        ])
-        self.change_head = ChangeHead(self.decoder_channels, self.num_change_classes)
-
-    @staticmethod
-    def _make_diff(fi: torch.Tensor, fj: torch.Tensor) -> torch.Tensor:
-        delta = fj - fi
-        return torch.cat([torch.abs(delta), F.relu(delta), F.relu(-delta)], dim=1)
-
-    @staticmethod
-    def _scale_dict(pdca_aux: Optional[Dict[str, Any]], key: str) -> Dict[str, Any]:
-        if not pdca_aux:
-            return {}
-        value = pdca_aux.get(key, {})
-        return value if isinstance(value, dict) else {}
-
-    def _has_any_guidance(self, pdca_aux: Optional[Dict[str, Any]]) -> bool:
-        weights_by_scale = self._scale_dict(pdca_aux, "pdca_source_weights")
-        names_by_scale = self._scale_dict(pdca_aux, "pdca_source_names_by_target")
-        for scale_key, scale_weights in weights_by_scale.items():
-            scale_names = names_by_scale.get(scale_key)
-            if scale_weights and scale_names:
-                return True
-        return False
-
-    def _source_weight(
-        self,
-        pdca_aux: Dict[str, Any],
-        scale_key: str,
-        target_name: str,
-        source_name: str,
-        like: torch.Tensor,
-    ) -> torch.Tensor:
-        weights_by_scale = self._scale_dict(pdca_aux, "pdca_source_weights")
-        names_by_scale = self._scale_dict(pdca_aux, "pdca_source_names_by_target")
-        scale_weights = weights_by_scale.get(scale_key)
-        scale_names = names_by_scale.get(scale_key)
-        if scale_weights is None or scale_names is None:
-            return like.new_zeros(like.shape[0], 1, like.shape[-2], like.shape[-1])
-        if target_name not in scale_weights or target_name not in scale_names:
-            raise RuntimeError("PDCA guidance missing target '%s' at scale %s" % (target_name, scale_key))
-        source_names = tuple(scale_names[target_name])
-        if source_name not in source_names:
-            raise RuntimeError(
-                "PDCA guidance missing source '%s' for target '%s' at scale %s"
-                % (source_name, target_name, scale_key)
-            )
-        weights = scale_weights[target_name]
-        if weights.ndim != 5:
-            raise RuntimeError(
-                "pdca_source_weights[%s][%s] must be [B,G,Q,H,W], got %r"
-                % (scale_key, target_name, tuple(weights.shape))
-            )
-        if self.detach_pdca_guidance:
-            weights = weights.detach()
-        q_idx = source_names.index(source_name)
-        out = weights[:, :, q_idx].mean(dim=1, keepdim=True)
-        if out.shape[-2:] != like.shape[-2:]:
-            out = F.interpolate(out, size=like.shape[-2:], mode="bilinear", align_corners=False)
-        return out.to(device=like.device, dtype=like.dtype)
-
-    def _make_guidance(
-        self,
-        pdca_aux: Optional[Dict[str, Any]],
-        scale_key: str,
-        phase_i: str,
-        phase_j: str,
-        like: torch.Tensor,
-    ) -> Tuple[torch.Tensor, bool]:
-        if not self.use_pdca_guidance:
-            return like.new_zeros(like.shape[0], 4, like.shape[-2], like.shape[-1]), False
-        if not pdca_aux:
-            return like.new_zeros(like.shape[0], 4, like.shape[-2], like.shape[-1]), False
-
-        weights_by_scale = self._scale_dict(pdca_aux, "pdca_source_weights")
-        names_by_scale = self._scale_dict(pdca_aux, "pdca_source_names_by_target")
-        has_weights = scale_key in weights_by_scale
-        has_names = scale_key in names_by_scale
-        if not has_weights and not has_names:
-            return like.new_zeros(like.shape[0], 4, like.shape[-2], like.shape[-1]), False
-        if has_weights != has_names:
-            raise RuntimeError(
-                "PDCA guidance scale %s requires both pdca_source_weights and "
-                "pdca_source_names_by_target" % scale_key
-            )
-
-        r = torch.cat(
-            [
-                self._source_weight(pdca_aux, scale_key, phase_i, phase_j, like),
-                self._source_weight(pdca_aux, scale_key, phase_j, phase_i, like),
-                self._source_weight(pdca_aux, scale_key, phase_i, "__null__", like),
-                self._source_weight(pdca_aux, scale_key, phase_j, "__null__", like),
-            ],
-            dim=1,
-        )
-        return r, True
-
-    def forward(
-        self,
-        phase_feats: Dict[str, List[torch.Tensor]],
-        output_size: Tuple[int, int],
-        pdca_aux: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
-        if self.use_pdca_guidance and not self._has_any_guidance(pdca_aux):
-            raise RuntimeError(
-                "PDCA-guided pair decoder requires pdca_source_weights and "
-                "pdca_source_names_by_target on at least one relation scale"
-            )
-
-        num_scales = len(self.in_channels)
-        for phase_name in self.phase_names:
-            if phase_name not in phase_feats or len(phase_feats[phase_name]) != num_scales:
-                raise ValueError("phase_feats[%s] must contain %d scales" % (phase_name, num_scales))
-
-        proj_all: List[torch.Tensor] = []
-        pair_debug: Dict[str, Any] = {
-            "gate": {key: [] for key in self.pair_keys},
-            "has_pdca_guidance": {key: [] for key in self.pair_keys},
-            "alpha": [],
-        }
-
-        for s, c_exp in enumerate(self.in_channels):
-            x_by_pair = []
-            gates_by_pair = []
-            has_by_pair = []
-            scale_key = str(s)
-            for pair_key, (phase_i, phase_j) in zip(self.pair_keys, self.pair_names):
-                fi = phase_feats[phase_i][s]
-                fj = phase_feats[phase_j][s]
-                if fi.shape != fj.shape or fi.ndim != 4:
-                    raise ValueError("Pair %s scale %d expects matching [B,C,H,W] features" % (pair_key, s))
-                if fi.shape[1] != c_exp:
-                    raise ValueError("Scale %d expects C=%d, got C=%d" % (s, c_exp, fi.shape[1]))
-                diff = self._make_diff(fi, fj)
-                r, has_guidance = self._make_guidance(pdca_aux, scale_key, phase_i, phase_j, fi)
-                gate = self.spatial_gates[s](r)
-                alpha = self.alpha_max * torch.sigmoid(self.raw_gate_scales[s]).view(1, 1, 1, 1)
-                x_by_pair.append(self.diff_proj[s](diff) * (1.0 + alpha * gate))
-                gates_by_pair.append(gate)
-                has_by_pair.append(has_guidance)
-
-            proj_all.append(torch.cat(x_by_pair, dim=0))  # [3B,D,H_s,W_s]
-            pair_debug["alpha"].append((self.alpha_max * torch.sigmoid(self.raw_gate_scales[s])).detach())
-            for pair_key, gate, has_guidance in zip(self.pair_keys, gates_by_pair, has_by_pair):
-                pair_debug["gate"][pair_key].append(gate)
-                pair_debug["has_pdca_guidance"][pair_key].append(bool(has_guidance))
-
-        # Decode all fixed pairs in one shared pass. k is intentionally fresh per forward.
-        x, k = self.deep_block(proj_all[-1], None)
-        for block, skip in zip(self.up_blocks, reversed(proj_all[:-1])):
-            x, k = block(x, skip, k)
-
-        logits_all = self.change_head(x)
-        logits_all = F.interpolate(logits_all, size=output_size, mode="bilinear", align_corners=False)
-        batch_size = phase_feats[self.pair_names[0][0]][0].shape[0]
-        logits_split = torch.split(logits_all, batch_size, dim=0)
-        change_logits_dict = {
-            pair_key: logits for pair_key, logits in zip(self.pair_keys, logits_split)
-        }
-        return change_logits_dict, pair_debug
-
-
 class PhaseAffine(nn.Module):
     """Optional phase-specific affine modulation."""
 
@@ -774,9 +540,6 @@ class MTSCDDecoderNet(nn.Module):
         sem_head_dropout: float = 0.0,
         chg_head_dropout: float = 0.0,
         return_intermediates_default: bool = False,
-        use_pdca_guided_pair_decoder: bool = False,
-        detach_pdca_guidance: bool = True,
-        use_pdca_guidance: bool = True,
     ):
         super().__init__()
 
@@ -805,9 +568,6 @@ class MTSCDDecoderNet(nn.Module):
         self.use_phase_classifier_bias = bool(use_phase_classifier_bias)
         self.use_transition_fusion = bool(use_transition_fusion)
         self.return_intermediates_default = bool(return_intermediates_default)
-        self.use_pdca_guided_pair_decoder = bool(use_pdca_guided_pair_decoder)
-        self.detach_pdca_guidance = bool(detach_pdca_guidance)
-        self.use_pdca_guidance = bool(use_pdca_guidance)
 
         # One temporal readout per scale for semantic branch.
         self.phase_readouts = nn.ModuleList([
@@ -851,25 +611,13 @@ class MTSCDDecoderNet(nn.Module):
                 if self.use_phase_affine else None
             )
 
-        if self.use_pdca_guided_pair_decoder:
-            self.pair_change_decoder = PDCAGuidedPairwiseChangeDecoder(
-                in_channels=self.in_channels,
-                decoder_channels=self.decoder_channels,
-                num_change_classes=self.num_change_classes,
-                detach_pdca_guidance=self.detach_pdca_guidance,
-                use_pdca_guidance=self.use_pdca_guidance,
-            )
-            self.change_decoder = None
-            self.change_head = None
-        else:
-            self.pair_change_decoder = None
-            self.change_decoder = ChangeDecoder(
-                in_channels=self.in_channels,
-                decoder_channels=self.decoder_channels,
-                diff_mode=self.diff_mode,
-                use_transition_fusion=self.use_transition_fusion,
-            )
-            self.change_head = ChangeHead(self.decoder_channels, self.num_change_classes, dropout=chg_head_dropout)
+        self.change_decoder = ChangeDecoder(
+            in_channels=self.in_channels,
+            decoder_channels=self.decoder_channels,
+            diff_mode=self.diff_mode,
+            use_transition_fusion=self.use_transition_fusion,
+        )
+        self.change_head = ChangeHead(self.decoder_channels, self.num_change_classes, dropout=chg_head_dropout)
 
     def _normalize_feature_order(self, feature_xy: Sequence[torch.Tensor]) -> List[torch.Tensor]:
         feature_xy = list(feature_xy)
@@ -1026,7 +774,6 @@ class MTSCDDecoderNet(nn.Module):
         feature_xy: Sequence[torch.Tensor],
         input_size: Optional[Tuple[int, int]] = None,
         return_intermediates: Optional[bool] = None,
-        pdca_aux: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor], Dict[str, List[torch.Tensor]], Dict[str, List[Optional[torch.Tensor]]], Dict[str, List[int]], Dict[str, Optional[List[int]]]]]:
         # Validate feature structure
         T, _ = self._validate_feature_xy(feature_xy)
@@ -1066,51 +813,30 @@ class MTSCDDecoderNet(nn.Module):
         # Goal 3: change branch
         # chg_logits: [B, num_change_classes, H, W]
         # -----------------------------
-        pair_debug = None
-        change_decoded = None
-        multi_scale_change_inputs = None
-        transition_t13 = None
-        if self.use_pdca_guided_pair_decoder:
-            change_logits_dict, pair_debug = self.pair_change_decoder(
-                phase_feats=phase_feats,
-                output_size=output_size,
-                pdca_aux=pdca_aux,
-            )
-            chg_logits = change_logits_dict["t1_to_t3"]
-        else:
-            transition_t13 = self._fuse_transition_for_t1_to_t3(transition_feats)
-            change_decoded, multi_scale_change_inputs = self.change_decoder(
-                phase_feats["t1"], phase_feats["t3"], transition_t13
-            )
-            chg_logits = self.change_head(change_decoded)
-            chg_logits = F.interpolate(chg_logits, size=output_size, mode="bilinear", align_corners=False)
-            change_logits_dict = {"t1_to_t3": chg_logits}
+        transition_t13 = self._fuse_transition_for_t1_to_t3(transition_feats)
+        change_decoded, multi_scale_change_inputs = self.change_decoder(
+            phase_feats["t1"], phase_feats["t3"], transition_t13
+        )
+        chg_logits = self.change_head(change_decoded)
+        chg_logits = F.interpolate(chg_logits, size=output_size, mode="bilinear", align_corners=False)
 
         outputs: Dict[str, Union[torch.Tensor, Dict[str, torch.Tensor], Dict[str, List[torch.Tensor]], Dict[str, List[Optional[torch.Tensor]]], Dict[str, List[int]], Dict[str, Optional[List[int]]]]] = {
             "sem_logits": sem_logits,
             "sem_logits_dict": sem_logits_dict,
             "chg_logits": chg_logits,
-            "change_logits_dict": change_logits_dict,
             "phase_windows": phase_windows,
             "transition_windows": transition_windows,
         }
-        if pair_debug is not None:
-            outputs["pair_gate_debug"] = pair_debug
 
         if return_intermediates:
             outputs["phase_features"] = phase_feats
             outputs["transition_features"] = transition_feats
             outputs["semantic_decoded_features"] = sem_decoded_feats
-            if self.use_pdca_guided_pair_decoder:
-                outputs["change_features"] = {
-                    "pair_gate_debug": pair_debug,
-                }
-            else:
-                outputs["change_features"] = {
-                    "multi_scale_change_inputs": multi_scale_change_inputs,
-                    "decoded_change_feature": change_decoded,
-                    "fused_transition_t1_to_t3": transition_t13,
-                }
+            outputs["change_features"] = {
+                "multi_scale_change_inputs": multi_scale_change_inputs,
+                "decoded_change_feature": change_decoded,
+                "fused_transition_t1_to_t3": transition_t13,
+            }
 
         return outputs
 import torch
@@ -1137,8 +863,8 @@ if __name__ == "__main__":
         num_sem_classes=num_sem_classes,
         num_change_classes=num_change_classes,
         input_size=(H, W),
-        phase_windows={"t1": [0, 1], "t2": [3, 4], "t3": [6, 7]},          # T=12 -> 默认 [0:4], [4:8], [8:12]
-        transition_windows={"t1_to_t2": [2], "t2_to_t3": [5], "t1_to_t3": None},     # T=12 -> 默认无 transition windows
+        phase_windows={"t1": [0], "t2": [1], "t3": [2]},          # T=12 -> 默认 [0:4], [4:8], [8:12]
+        transition_windows={"t1_to_t2": None, "t2_to_t3": None, "t1_to_t3": None},     # T=12 -> 默认无 transition windows
         temporal_readout="attention",
         diff_mode="abs_signed",
         share_semantic_decoder=True,
@@ -1158,3 +884,4 @@ if __name__ == "__main__":
     print("sem_logits_dict[t1] shape:", outputs["sem_logits_dict"]["t1"].shape)
     print("resolved phase_windows:", outputs["phase_windows"])
     print("resolved transition_windows:", outputs["transition_windows"])
+ 

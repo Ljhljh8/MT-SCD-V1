@@ -1,4 +1,4 @@
-from models.Decoders.Snn_Mtscd_Decoder_V2 import MTSCDDecoderNet
+from models.Decoders.Snn_Mtscd_Decoder_V2_direct import MTSCDDecoderNet
 import torch
 from torch import nn
 # from models.Backbones.sdtv2 import Spiking_vit_MetaFormer as SDTV2Backbone
@@ -228,7 +228,7 @@ class GSTMSCD_WUSU(nn.Module):
             collect_pair_guidance = (
                 self.use_pdca_guided_pair_decoder
                 and self.use_pdca_guidance
-                and index == len(self.encoder) - 1
+                and index == len(self.encoder) - 1  # 仅最后一层
             )
             collect_relation_aux = (
                 return_aux
