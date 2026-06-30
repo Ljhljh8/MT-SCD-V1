@@ -75,6 +75,7 @@ class DendBlock(nn.Module):
     def forward(self, x: torch.Tensor, k=None):
         if x.ndim != 4:
             raise ValueError(f"DendBlock expects [B*,C,H,W], got {tuple(x.shape)}")
+
         y, k = self.block(x.unsqueeze(0), k)
         y = self.BN(y.flatten(0, 1))
         return y, k
@@ -144,7 +145,12 @@ class DirectSemanticDecoder(nn.Module):
         self.decoder_channels = int(decoder_channels)
 
         self.laterals = nn.ModuleList(
-            [nn.Conv2d(c, self.decoder_channels, kernel_size=1, bias=False) for c in self.in_channels]
+            [nn.Sequential(
+                Q_IFNode(surrogate_function=Quant()),
+                nn.Conv2d(c, self.decoder_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(self.decoder_channels),
+            )
+                for c in self.in_channels]
         )
         self.deep_block = DendBlock(self.decoder_channels, self.decoder_channels)
         self.up_blocks = nn.ModuleList(
