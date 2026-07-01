@@ -185,6 +185,31 @@ def build_parser():
     parser.add_argument("--pdca_aux_tau_pos", type=float, default=0.20)
     parser.add_argument("--pdca_aux_ambiguous_weight", type=float, default=0.25)
     parser.add_argument("--use-pdca-guided-pair-decoder", action="store_true")
+    parser.add_argument(
+        "--pdca-dend-prior-mode",
+        default="offset_dual",
+        choices=["none", "source", "offset_sim", "offset_dual"],
+    )
+    parser.add_argument("--pdca-dend-prior-alpha", type=float, default=1e-3)
+    parser.add_argument("--pdca-dend-prior-detach", type=str2bool, default=True)
+    parser.add_argument(
+        "--pdca-dend-prior-descriptor",
+        default="mean_std",
+        choices=["mean", "mean_std", "raw"],
+    )
+    parser.add_argument(
+        "--pdca-dend-prior-normalize",
+        default="zscore",
+        choices=["none", "zscore"],
+    )
+    parser.add_argument("--pdca-dend-prior-sim-weight", type=float, default=1.0)
+    parser.add_argument("--pdca-dend-prior-diff-weight", type=float, default=0.25)
+    parser.add_argument("--pdca-dend-prior-use-conf-gate", type=str2bool, default=True)
+    parser.add_argument("--pdca-dend-prior-conf-beta", type=float, default=4.0)
+    parser.add_argument("--pdca-dend-prior-conf-tau", type=float, default=0.10)
+    parser.add_argument("--pdca-dend-prior-affect-null", type=str2bool, default=False)
+    parser.add_argument("--pdca-dend-prior-stats", type=str2bool, default=True)
+
     parser.add_argument("--no-pdca-guidance", action="store_true")
     parser.add_argument("--no-detach-pdca-guidance", action="store_true")
     parser.add_argument("--pair-bcd-lambda-adj", type=float, default=1.0)
@@ -735,6 +760,18 @@ def build_model(args, RS, device):
         detach_pdca_guidance=not args.no_detach_pdca_guidance,
         use_pdca_guidance=not args.no_pdca_guidance,
 
+        pdca_dend_prior_mode=args.pdca_dend_prior_mode,
+        pdca_dend_prior_alpha=args.pdca_dend_prior_alpha,
+        pdca_dend_prior_detach=args.pdca_dend_prior_detach,
+        pdca_dend_prior_descriptor=args.pdca_dend_prior_descriptor,
+        pdca_dend_prior_normalize=args.pdca_dend_prior_normalize,
+        pdca_dend_prior_sim_weight=args.pdca_dend_prior_sim_weight,
+        pdca_dend_prior_diff_weight=args.pdca_dend_prior_diff_weight,
+        pdca_dend_prior_use_conf_gate=args.pdca_dend_prior_use_conf_gate,
+        pdca_dend_prior_conf_beta=args.pdca_dend_prior_conf_beta,
+        pdca_dend_prior_conf_tau=args.pdca_dend_prior_conf_tau,
+        pdca_dend_prior_affect_null=args.pdca_dend_prior_affect_null,
+        pdca_dend_prior_stats=args.pdca_dend_prior_stats,
         # pdca_context_spike_mode=args.pdca_context_spike_mode,
         # pdca_context_spike_capacity=args.pdca_context_spike_capacity,
         # pdca_context_spike_threshold=args.pdca_context_spike_threshold,

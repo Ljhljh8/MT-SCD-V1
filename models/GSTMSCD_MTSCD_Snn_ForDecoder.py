@@ -25,6 +25,19 @@ class GSTMSCD_WUSU(nn.Module):
         use_pdca_guided_pair_decoder=False,
         detach_pdca_guidance=True,
         use_pdca_guidance=True,
+
+        pdca_dend_prior_mode="offset_dual",
+        pdca_dend_prior_alpha=1e-3,
+        pdca_dend_prior_detach=True,
+        pdca_dend_prior_descriptor="mean_std",
+        pdca_dend_prior_normalize="zscore",
+        pdca_dend_prior_sim_weight=1.0,
+        pdca_dend_prior_diff_weight=0.25,
+        pdca_dend_prior_use_conf_gate=True,
+        pdca_dend_prior_conf_beta=4.0,
+        pdca_dend_prior_conf_tau=0.10,
+        pdca_dend_prior_affect_null=False,
+        pdca_dend_prior_stats=True,
     ):
         super(GSTMSCD_WUSU, self).__init__()
         self.backbone_name = backbone
@@ -37,6 +50,19 @@ class GSTMSCD_WUSU(nn.Module):
         self.use_pdca_guided_pair_decoder = bool(use_pdca_guided_pair_decoder)
         self.detach_pdca_guidance = bool(detach_pdca_guidance)
         self.use_pdca_guidance = bool(use_pdca_guidance)
+        self.pdca_dend_prior_mode = str(pdca_dend_prior_mode)
+        self.pdca_dend_prior_alpha = float(pdca_dend_prior_alpha)
+        self.pdca_dend_prior_detach = bool(pdca_dend_prior_detach)
+        self.pdca_dend_prior_descriptor = str(pdca_dend_prior_descriptor)
+        self.pdca_dend_prior_normalize = str(pdca_dend_prior_normalize)
+        self.pdca_dend_prior_sim_weight = float(pdca_dend_prior_sim_weight)
+        self.pdca_dend_prior_diff_weight = float(pdca_dend_prior_diff_weight)
+        self.pdca_dend_prior_use_conf_gate = bool(pdca_dend_prior_use_conf_gate)
+        self.pdca_dend_prior_conf_beta = float(pdca_dend_prior_conf_beta)
+        self.pdca_dend_prior_conf_tau = float(pdca_dend_prior_conf_tau)
+        self.pdca_dend_prior_affect_null = bool(pdca_dend_prior_affect_null)
+        self.pdca_dend_prior_stats = bool(pdca_dend_prior_stats)
+
         if (
             self.use_pdca_guided_pair_decoder
             and self.use_pdca_guidance
@@ -177,6 +203,20 @@ class GSTMSCD_WUSU(nn.Module):
                         residual_init=1e-3,
                         use_relation_aux=self.use_pdca_relation_aux and j == 3,
                         relation_aux_pairs=("t1<-t3", "t3<-t1"),
+
+                        pdca_dend_prior_mode=self.pdca_dend_prior_mode,
+                        pdca_dend_prior_alpha=self.pdca_dend_prior_alpha,
+                        pdca_dend_prior_detach=self.pdca_dend_prior_detach,
+                        pdca_dend_prior_descriptor=self.pdca_dend_prior_descriptor,
+                        pdca_dend_prior_normalize=self.pdca_dend_prior_normalize,
+                        pdca_dend_prior_sim_weight=self.pdca_dend_prior_sim_weight,
+                        pdca_dend_prior_diff_weight=self.pdca_dend_prior_diff_weight,
+                        pdca_dend_prior_use_conf_gate=self.pdca_dend_prior_use_conf_gate,
+                        pdca_dend_prior_conf_beta=self.pdca_dend_prior_conf_beta,
+                        pdca_dend_prior_conf_tau=self.pdca_dend_prior_conf_tau,
+                        pdca_dend_prior_affect_null=self.pdca_dend_prior_affect_null,
+                        pdca_dend_prior_stats=self.pdca_dend_prior_stats,
+
                         per_scale={
                             "2": {"offset_radius": 64.0},
                             "3": {"offset_radius": 32.0},

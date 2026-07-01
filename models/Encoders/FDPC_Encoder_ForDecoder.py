@@ -427,6 +427,8 @@ class FDPCEncoder(nn.Module):
             "pdca_joint_weights": {},
             "pdca_source_names_by_target": {},
             "pdca_relation_logits": {},
+            "pdca_dend_prior": {},
+            "pdca_context_spike": {},
         }
 
     def _resolve_pdca_cfg_for_scale(self, scale_key: str) -> dict:
@@ -588,6 +590,9 @@ class FDPCEncoder(nn.Module):
                         self.pdca_blocks[scale_key].source_names_by_target
                     )
                     aux["pdca_relation_logits"][scale_key] = pdca_aux.get("relation_logits", {})
+
+                    aux["pdca_dend_prior"][scale_key] = pdca_aux.get("dend_prior", {})
+                    aux["pdca_context_spike"][scale_key] = pdca_aux.get("context_spike", {})
             elif self.relation_mode == "none":
                 pass
 
