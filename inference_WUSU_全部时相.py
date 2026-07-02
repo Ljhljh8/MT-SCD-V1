@@ -29,7 +29,7 @@ import copy
 import collections
 import time
 
-
+"/mnt/ljh/GSTM-SCD-main/checkpoints/WUSU/GSTMSCD/GOST-Mamba/epoch93_Score57.24_mIOU83.26_Sek46.09_Fscd80.44_OA96.33.pth"
 class Options:
     def __init__(self):
         parser = argparse.ArgumentParser('Semantic Change Detection')
