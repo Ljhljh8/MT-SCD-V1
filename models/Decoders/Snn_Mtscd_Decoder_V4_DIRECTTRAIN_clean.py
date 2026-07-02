@@ -14,8 +14,6 @@ Main changes from the old V4 decoder:
     - PDCA-guided pair decoder is retained and adapted to direct 5D feature access.
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -236,20 +234,18 @@ class DirectPairChangeDecoder(nn.Module):
             return torch.cat([f_i, f_j, abs_diff], dim=1)
         raise RuntimeError("unreachable diff_mode")
 
-    def forward(self, feature_xy_high_to_low: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    def forward(self, feature_xy_high_to_low: Sequence[torch.Tensor]) -> torch.Tensor:
         idx_i, idx_j = self.phase_pair
-        multi_scale_change_inputs: List[torch.Tensor] = []
         proj: List[torch.Tensor] = []
         for feat, lateral in zip(feature_xy_high_to_low, self.laterals):
             f_i = feat[idx_i]
             f_j = feat[idx_j]
             x_in = self._make_diff(f_i, f_j)
-            multi_scale_change_inputs.append(x_in)    # 不同尺度之间不同通道维度的diff特征
             proj.append(lateral(x_in).unsqueeze(0))              # 不同尺度之间映射到相同通道维度的diff特征
         x, k = self.deep_block(proj[-1], None)
         for block, skip in zip(self.up_blocks, reversed(proj[:-1])):
             x, k = block(x, skip, k)
-        return x.squeeze(0), multi_scale_change_inputs
+        return x.squeeze(0)
 
 
 class PDCASpatialGate(nn.Module):
@@ -276,7 +272,6 @@ class PDCAGuidedPairwiseChangeDecoder(nn.Module):
 
     Output:
         change_logits_dict[pair_key]: [B,num_change_classes,H,W]
-        pair_gate_debug: gate, alpha, has_pdca_guidance
     """
 
     FIXED_PAIR_KEYS = PAIR_KEYS
@@ -416,8 +411,7 @@ class PDCAGuidedPairwiseChangeDecoder(nn.Module):
         feature_xy_high_to_low: Sequence[torch.Tensor],
         output_size: Tuple[int, int],
         pdca_aux: Optional[Dict[str, Any]] = None,
-        return_debug: bool = False,
-    ) -> Tuple[Dict[str, torch.Tensor], Optional[Dict[str, Any]]]:
+    ) -> Dict[str, torch.Tensor]:
         if self.use_pdca_guidance and not self._has_any_guidance(pdca_aux):
             raise RuntimeError(
                 "PDCA-guided pair decoder requires pdca_source_weights and "
@@ -425,38 +419,21 @@ class PDCAGuidedPairwiseChangeDecoder(nn.Module):
             )
 
         proj_all: List[torch.Tensor] = []
-        pair_debug = None
-        if return_debug:
-            pair_debug = {
-                "gate": {key: [] for key in self.pair_keys},
-                "has_pdca_guidance": {key: [] for key in self.pair_keys},
-                "alpha": [],
-            }
 
         for s, (feat, diff_proj) in enumerate(zip(feature_xy_high_to_low, self.diff_proj)):
             # feat: [N,B,C,H,W]; pair indexing is local and on demand.
             x_by_pair: List[torch.Tensor] = []
-            gates_by_pair: List[torch.Tensor] = [] if return_debug else []
-            has_by_pair: List[bool] = [] if return_debug else []
             scale_key = str(s)
             for pair_key, (phase_i, phase_j) in zip(self.pair_keys, self.pair_names):
                 fi = feat[self.phase_to_index[phase_i]]
                 fj = feat[self.phase_to_index[phase_j]]
                 diff = self._make_diff(fi, fj)
-                r, has_guidance = self._make_guidance(pdca_aux, scale_key, phase_i, phase_j, fi)
+                r, _ = self._make_guidance(pdca_aux, scale_key, phase_i, phase_j, fi)
                 gate = self.spatial_gates[s](r)
                 alpha = self.alpha_max * torch.sigmoid(self.raw_gate_scales[s]).view(1, 1, 1, 1)
                 x_by_pair.append(diff_proj(diff) * (1.0 + alpha * gate))
-                if return_debug:
-                    gates_by_pair.append(gate)
-                    has_by_pair.append(has_guidance)
 
             proj_all.append(torch.cat(x_by_pair, dim=0).unsqueeze(0))  # [3B,D,H_s,W_s]
-            if return_debug:
-                pair_debug["alpha"].append((self.alpha_max * torch.sigmoid(self.raw_gate_scales[s])).detach())
-                for pair_key, gate, has_guidance in zip(self.pair_keys, gates_by_pair, has_by_pair):
-                    pair_debug["gate"][pair_key].append(gate)
-                    pair_debug["has_pdca_guidance"][pair_key].append(bool(has_guidance))
 
         x, k = self.deep_block(proj_all[-1], None)
         for block, skip in zip(self.up_blocks, reversed(proj_all[:-1])):
@@ -467,7 +444,7 @@ class PDCAGuidedPairwiseChangeDecoder(nn.Module):
         batch_size = feature_xy_high_to_low[0].shape[1]
         logits_split = torch.split(logits_all, batch_size, dim=0)
         change_logits_dict = {pair_key: logits for pair_key, logits in zip(self.pair_keys, logits_split)}
-        return change_logits_dict, pair_debug
+        return change_logits_dict
 
 
 class PhaseAffine(nn.Module):
@@ -576,7 +553,6 @@ class MTSCDDecoderNet(nn.Module):
         use_transition_fusion: bool = False,
         sem_head_dropout: float = 0.0,
         chg_head_dropout: float = 0.0,
-        return_intermediates_default: bool = False,
         use_pdca_guided_pair_decoder: bool = False,
         detach_pdca_guidance: bool = True,
         use_pdca_guidance: bool = True,
@@ -597,7 +573,6 @@ class MTSCDDecoderNet(nn.Module):
         self.share_semantic_decoder = bool(share_semantic_decoder)
         self.use_phase_affine = bool(use_phase_affine)
         self.use_phase_classifier_bias = bool(use_phase_classifier_bias)
-        self.return_intermediates_default = bool(return_intermediates_default)
         self.use_pdca_guided_pair_decoder = bool(use_pdca_guided_pair_decoder)
         self.detach_pdca_guidance = bool(detach_pdca_guidance)
         self.use_pdca_guidance = bool(use_pdca_guidance)
@@ -718,7 +693,6 @@ class MTSCDDecoderNet(nn.Module):
         self,
         feature_xy_high_to_low: Sequence[torch.Tensor],
         input_size: Optional[Tuple[int, int]] = None,
-        return_intermediates: Optional[bool] = None,
         pdca_aux: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         # Minimal assumptions only. feature_xy is a high-to-low list of [N,B,C,H,W].
@@ -729,8 +703,6 @@ class MTSCDDecoderNet(nn.Module):
 
         feature_xy_high_to_low = self._normalize_feature_order(feature_xy_high_to_low)
         output_size = self._resolve_output_size(input_size, feature_xy_high_to_low[0])
-        if return_intermediates is None:
-            return_intermediates = self.return_intermediates_default
         # sem_logits：(B, N, Class, H, W)  sem_logits_dict: {'T1':(B,Class, H, W), 'T2':(B,Class, H, W), 'T3':(B,Class, H, W)}
         # sem_decoded：(N, B, D, H, W)  sem_logits_seq: (N, B, Class, H, W)
         if self.share_semantic_decoder:
@@ -741,19 +713,15 @@ class MTSCDDecoderNet(nn.Module):
             sem_logits, sem_logits_dict, sem_decoded, sem_logits_seq = self._decode_semantic_phasewise(
                 feature_xy_high_to_low, output_size
             )
-        pair_debug = None
-        change_decoded = None
-        multi_scale_change_inputs = None
         if self.use_pdca_guided_pair_decoder:
-            change_logits_dict, pair_debug = self.pair_change_decoder(
+            change_logits_dict = self.pair_change_decoder(
                 feature_xy_high_to_low=feature_xy_high_to_low,
                 output_size=output_size,
                 pdca_aux=pdca_aux,
-                return_debug=False,
             )
             chg_logits = change_logits_dict["t1_to_t3"]
         else:
-            change_decoded, multi_scale_change_inputs = self.change_decoder(feature_xy_high_to_low)
+            change_decoded = self.change_decoder(feature_xy_high_to_low)
             chg_logits = self.change_head(change_decoded)
             chg_logits = F.interpolate(chg_logits, size=output_size, mode="bilinear", align_corners=False)
             change_logits_dict = {"t1_to_t3": chg_logits}
@@ -764,8 +732,6 @@ class MTSCDDecoderNet(nn.Module):
             "chg_logits": chg_logits,
             "change_logits_dict": change_logits_dict,
         }
-        if pair_debug is not None:
-            outputs["pair_gate_debug"] = pair_debug
 
         return outputs
 
@@ -793,27 +759,3 @@ class SimAM(nn.Module):
         att_weight = self.activaton(y)
 
         return att_weight
-if __name__ == "__main__":
-    # Minimal CPU/GPU shape smoke test. Requires project dependencies.
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    N, B, H, W = 3, 2, 256, 256
-    feature_xy = [
-        torch.randn(N, B, 32, H // 2, W // 2, device=device),
-        torch.randn(N, B, 64, H // 4, W // 4, device=device),
-        torch.randn(N, B, 128, H // 8, W // 8, device=device),
-        torch.randn(N, B, 360, H // 16, W // 16, device=device),
-    ]
-    model = MTSCDDecoderNet(
-        in_channels=[32, 64, 128, 360],
-        decoder_channels=256,
-        num_sem_classes=13,
-        num_change_classes=1,
-        input_size=(H, W),
-        use_pdca_guided_pair_decoder=False,
-        return_intermediates_default=True,
-    ).to(device)
-    out = model(feature_xy, input_size=(H, W))
-    print(out["sem_logits"].shape)
-    print(out["sem_logits_dict"]["t1"].shape)
-    print(out["chg_logits"].shape)
-    print(out["change_logits_dict"]["t1_to_t3"].shape)
