@@ -225,3 +225,23 @@ class GSTMSCD_WUSU(nn.Module):
         if return_change_logits_dict:
             return seg1, seg2, seg3, change13, outs["change_logits_dict"]
         return seg1, seg2, seg3, change13
+
+if __name__ == '__main__':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model = MTGrootV3D_SV3(backbone='resnet34', pretrained=True, nclass=7, lightweight=True, M=6, Lambda=0.00005).to(device)
+    # model = ST_VSSM_Siam().to(device)
+    model = GSTMSCD_WUSU(backbone='sdtv2', pretrained=False, nclass=13).to(device)
+    print(model)
+    image1 = torch.randn(2, 4, 512, 512).to(device)
+    image2 = torch.randn(2, 4, 512, 512).to(device)
+    image3 = torch.randn(2, 4, 512, 512).to(device)
+    # image4 = torch.randn(2, 4, 512, 512).to(device)
+    # image5 = torch.randn(2, 4, 512, 512).to(device)
+    # image6 = torch.randn(2, 4, 512, 512).to(device)
+    # seg1, seg2, seg3, change = model(image1, image2, image3)
+    x = torch.stack([image1, image2, image3], dim=0)
+    fs = model(x)
+    # print(seg1)
+    from thop import profile
+    FLOPs, Params = profile(model, inputs=(x,))
+    print('Params = %.2f M, FLOPs = %.2f G' % (Params / 1e6, FLOPs / 1e9))
