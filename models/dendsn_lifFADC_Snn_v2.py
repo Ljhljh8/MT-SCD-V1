@@ -4,7 +4,7 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mmseg.Qtrick_architecture.clock_driven.neuron import Q_IFNode
+from mmseg.Qtrick_architecture.clock_driven.neuron import Q_IFNode, MTSCDPRDNIIFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 try:
     from mmcv.ops.modulated_deform_conv import modulated_deform_conv2d
@@ -471,7 +471,8 @@ class DendFADCConv2d(nn.Module):
             #     v_reset=0.0,
             #     detach_reset=detach_reset,
             # )
-            self.lif = Q_IFNode(surrogate_function=Quant())
+            self.lif = MTSCDPRDNIIFNode()
+            # self.lif = Q_IFNode(surrogate_function=Quant())
 
         if kh > 1 or kw > 1:
             self.conv_offset = nn.Conv2d(
