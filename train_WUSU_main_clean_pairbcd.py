@@ -80,16 +80,27 @@ def build_parser():
 
     parser.add_argument("--relation-mode", choices=["pdca"], default="pdca")
     parser.add_argument("--use-pdca-guided-pair-decoder", action="store_true")
-    parser.add_argument("--pdca-dend-prior-mode", default="offset_dual", choices=["none", "source", "offset_sim", "offset_dual"])
+    parser.add_argument("--pdca-dend-prior-mode", default="offset_residual", choices=["none", "source", "offset_sim", "offset_dual", "offset_residual"])
     parser.add_argument("--pdca-dend-prior-alpha", type=float, default=1e-3)
     parser.add_argument("--pdca-dend-prior-detach", type=str2bool, default=True)
     parser.add_argument("--pdca-dend-prior-descriptor", default="mean_std", choices=["mean", "mean_std", "raw"])
     parser.add_argument("--pdca-dend-prior-normalize", default="zscore", choices=["none", "zscore"])
+
+    ## pdca v21 add parm
+    parser.add_argument("--pdca-dend-prior-source-weight", type=float, default=1.0)
+    parser.add_argument("--pdca-dend-prior-point-weight", type=float, default=0.25)
+    ## pdca v21 add parm
     parser.add_argument("--pdca-dend-prior-sim-weight", type=float, default=1.0)
     parser.add_argument("--pdca-dend-prior-diff-weight", type=float, default=0.25)
     parser.add_argument("--pdca-dend-prior-use-conf-gate", type=str2bool, default=True)
     parser.add_argument("--pdca-dend-prior-conf-beta", type=float, default=4.0)
     parser.add_argument("--pdca-dend-prior-conf-tau", type=float, default=0.10)
+
+    ## pdca v21 add parm
+    parser.add_argument("--pdca-dend-prior-use-offset-gate", type=str2bool, default=True)
+    parser.add_argument("--pdca-dend-prior-center-point", type=str2bool, default=True)
+    parser.add_argument("--pdca-dend-prior-clip", type=float, default=2.0)
+    ## pdca v21 add parm
     parser.add_argument("--pdca-dend-prior-affect-null", type=str2bool, default=False)
     parser.add_argument("--pdca-dend-prior-stats", type=str2bool, default=False)
 
@@ -340,6 +351,13 @@ def build_model(args, RS, device):
         pdca_dend_prior_conf_tau=args.pdca_dend_prior_conf_tau,
         pdca_dend_prior_affect_null=args.pdca_dend_prior_affect_null,
         pdca_dend_prior_stats=args.pdca_dend_prior_stats,
+
+        pdca_dend_prior_source_weight=args.pdca_dend_prior_source_weight,
+        pdca_dend_prior_point_weight=args.pdca_dend_prior_point_weight,
+        pdca_dend_prior_use_offset_gate=args.pdca_dend_prior_use_offset_gate,
+        pdca_dend_prior_center_point=args.pdca_dend_prior_center_point,
+        pdca_dend_prior_clip=args.pdca_dend_prior_clip,
+
     )
     if args.pretrain_from:
         incompatible = load_model_weights(model, args.pretrain_from, strict=False)

@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
-from models.Encoders.phase_deformable_context_attention_fordecoder_clean import PhaseDeformableContextAttention
+from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v21 import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 
@@ -240,6 +240,13 @@ class FDPCEncoder(nn.Module):
         return_aux_default: bool = False,
         relation_mode: str = "pdca",
         pdca_cfg: Optional[dict] = None,
+        pdca_dend_prior_source_weight=1.0,
+        pdca_dend_prior_point_weight=0.25,
+        pdca_dend_prior_use_offset_gate=True,
+        pdca_dend_prior_center_point=True,
+        pdca_dend_prior_clip=2.0,
+
+
     ):
         super().__init__()
 

@@ -33,6 +33,12 @@ class GSTMSCD_WUSU(nn.Module):
         pdca_dend_prior_conf_tau=0.10,
         pdca_dend_prior_affect_null=False,
         pdca_dend_prior_stats=False,
+
+        pdca_dend_prior_source_weight=1.0,
+        pdca_dend_prior_point_weight=0.25,
+        pdca_dend_prior_use_offset_gate=True,
+        pdca_dend_prior_center_point=True,
+        pdca_dend_prior_clip=2.0,
     ):
         super().__init__()
         self.backbone_name = backbone
@@ -121,6 +127,12 @@ class GSTMSCD_WUSU(nn.Module):
                             "2": {"offset_radius": 64.0},
                             "3": {"offset_radius": 32.0},
                         },
+
+                        pdca_dend_prior_source_weight=pdca_dend_prior_source_weight,
+                        pdca_dend_prior_point_weight=pdca_dend_prior_point_weight,
+                        pdca_dend_prior_use_offset_gate=pdca_dend_prior_use_offset_gate,
+                        pdca_dend_prior_center_point=pdca_dend_prior_center_point,
+                        pdca_dend_prior_clip=pdca_dend_prior_clip,
                     ),
                     return_aux_default=False,
                 )
