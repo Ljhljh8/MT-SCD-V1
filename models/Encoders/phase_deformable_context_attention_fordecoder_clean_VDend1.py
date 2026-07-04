@@ -1,24 +1,10 @@
 """
 Phase-Deformable Context Attention for physical-phase MTSCD features.
 
-V2.1 dendritic logit prior version.
-
-Input and output use [N, B, C, H, W], where N is the remote-sensing
-physical phase axis. N is not treated as vanilla SNN simulation time.
-
-Recommended V2.1 mode:
-    pdca_dend_prior_mode="offset_residual"
-
-Core idea:
-    Preserve the stable V1 source-level dendritic prior, and add an
-    offset-aligned point-level residual prior that only re-ranks sampling
-    points within the same source phase. This avoids the previous V2 issue
-    where raw dendritic difference could be rewarded as positive evidence.
+Input and output use [N,B,C,H,W], where N is the remote-sensing phase axis.
 """
 
-from __future__ import annotations
-
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -29,7 +15,7 @@ from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant
 
 
 PairName = Tuple[str, str]
-AuxDict = Dict[str, Dict[str, Any]]
+AuxDict = Dict[str, Dict[str, torch.Tensor]]
 
 
 def _valid_group_count(channels: int, preferred: int = 32) -> int:
@@ -65,10 +51,7 @@ def _ensure_pair_tuple(pair: Sequence[str]) -> PairName:
 class StatelessQIF(nn.Module):
     """
     Stateless integer spike-like activation.
-
     It performs Quant + normalization but does not keep membrane state.
-    This is safer inside directed target-source relation branches than a
-    shared stateful Q_IFNode.
     """
 
     def __init__(self, capacity: int = 8, v_threshold: float = 1.0):
@@ -83,26 +66,24 @@ class StatelessQIF(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.quant(x / self.v_threshold) / float(self.capacity)
-
-
+# class StatelessQIF(torch.autograd.Function):
+#     @staticmethod
+#     @torch.cuda.amp.custom_fwd
+#     def forward(ctx, i, min_value=0, max_value=8): #1111
+#         ctx.min = min_value
+#         ctx.max = max_value
+#         ctx.save_for_backward(i)
+#         return torch.round(torch.clamp(i, min=min_value, max=max_value))
+#
+#     @staticmethod
+#     @torch.cuda.amp.custom_fwd
+#     def backward(ctx, grad_output):
+#         grad_input = grad_output.clone()
+#         i, = ctx.saved_tensors
+#         grad_input[i < ctx.min] = 0
+#         grad_input[i > ctx.max] = 0
+#         return grad_input, None, None
 class PhaseDeformableContextAttention(nn.Module):
-    """
-    Phase-Deformable Context Attention with V2.1 dendritic prior.
-
-    Args:
-        channels: feature channels C.
-        phase_names: physical phase names, length N.
-        context_pairs: undirected phase pairs, e.g. (("t1", "t2"), ...).
-
-    Forward:
-        feat:   [N, B, C, H, W]
-        K_GATE: dendritic K maps from FDPCEncoder current scale.
-
-    Return:
-        out: [N, B, C, H, W]
-        aux: dict, only populated if return_aux=True.
-    """
-
     def __init__(
         self,
         channels: int,
@@ -122,39 +103,24 @@ class PhaseDeformableContextAttention(nn.Module):
         use_stateful_q_if: bool = True,
         use_stateless_integer_activation: bool = True,
         use_null_source: bool = True,
-        alpha: float = 1e-3,  # legacy fallback for old config
+
+        alpha = 1e-3,
         # Dendritic logit prior.
-        # V1:
-        #   source          : source-level dendritic logit bias.
-        # V2 legacy/debug:
-        #   offset_sim      : offset-aligned sim prior.
-        #   offset_dual     : stabilized sim - diff prior.
-        # V2.1 recommended:
-        #   offset_residual : source-anchored point residual prior.
-        pdca_dend_prior_mode: str = "offset_residual",
-        pdca_dend_prior_alpha: Optional[float] = None,
+        # "source" keeps the old V1 behavior.
+        # "offset_sim" and "offset_dual" are V2 point-level priors.
+        pdca_dend_prior_mode: str = "offset_dual",    # "source" 'none'
+        pdca_dend_prior_alpha: float = 1e-3,
         pdca_dend_prior_detach: bool = True,
         pdca_dend_prior_descriptor: str = "mean_std",
         pdca_dend_prior_normalize: str = "zscore",
-        # V2.1 source-anchor / point-residual weights.
-        pdca_dend_prior_source_weight: float = 1.0,
-        pdca_dend_prior_point_weight: float = 0.25,
-        # Legacy/debug weights for offset_sim / offset_dual.
         pdca_dend_prior_sim_weight: float = 1.0,
         pdca_dend_prior_diff_weight: float = 0.25,
         pdca_dend_prior_use_conf_gate: bool = True,
         pdca_dend_prior_conf_beta: float = 4.0,
         pdca_dend_prior_conf_tau: float = 0.10,
-        # V2.1: soft decay for unreliable large-offset dendritic sampling.
-        pdca_dend_prior_use_offset_gate: bool = True,
-        # V2.1: point prior is centered across Kp within the same source.
-        pdca_dend_prior_center_point: bool = True,
-        # Clip prior before multiplying alpha.
-        pdca_dend_prior_clip: float = 2.0,
-        # Kept for config compatibility. V2.1 clean path intentionally does not
-        # affect the __null__ branch.
         pdca_dend_prior_affect_null: bool = False,
         pdca_dend_prior_stats: bool = True,
+
     ):
         super().__init__()
         self.channels = int(channels)
@@ -165,6 +131,7 @@ class PhaseDeformableContextAttention(nn.Module):
         self.return_aux_default = bool(return_aux_default)
         self.use_null_source = bool(use_null_source)
 
+
         if self.channels <= 0:
             raise ValueError("channels must be positive")
         if self.num_heads <= 0:
@@ -172,10 +139,7 @@ class PhaseDeformableContextAttention(nn.Module):
         if self.num_points <= 0:
             raise ValueError("num_points must be positive")
         if self.channels % self.num_heads != 0:
-            raise ValueError(
-                "channels=%d must be divisible by num_heads=%d"
-                % (self.channels, self.num_heads)
-            )
+            raise ValueError("channels=%d must be divisible by num_heads=%d" % (self.channels, self.num_heads))
 
         self.phase_names = tuple(str(name) for name in phase_names)
         if len(self.phase_names) == 0:
@@ -183,11 +147,7 @@ class PhaseDeformableContextAttention(nn.Module):
         self.phase_to_index = {name: idx for idx, name in enumerate(self.phase_names)}
         if len(self.phase_to_index) != len(self.phase_names):
             raise ValueError("phase_names must be unique")
-
-        # Preserve the current clean branch behavior. This is stateful; the
-        # training script should call reset_net per batch as in the existing code.
         self.act = Q_IFNode(surrogate_function=Quant())
-
         self.context_pairs = tuple(_ensure_pair_tuple(pair) for pair in context_pairs)
         pair_keys = set()
         for a, b in self.context_pairs:
@@ -218,7 +178,7 @@ class PhaseDeformableContextAttention(nn.Module):
             bool(use_stateless_integer_activation),
             bool(use_q_if_value),
         )
-
+        self.QLIF_offset = Q_IFNode(surrogate_function=Quant())
         self.offset_head = nn.Sequential(
             nn.Conv2d(4 * self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
@@ -231,14 +191,7 @@ class PhaseDeformableContextAttention(nn.Module):
         nn.init.zeros_(self.offset_head[-1].weight)
         nn.init.zeros_(self.offset_head[-1].bias)
 
-        valid_dend_prior_modes = (
-            "none",
-            "source",
-            "offset_sim",
-            "offset_dual",
-            "offset_residual",
-            "offset_gate",
-        )
+        valid_dend_prior_modes = ("none", "source", "offset_sim", "offset_dual")
         self.pdca_dend_prior_mode = str(pdca_dend_prior_mode)
         if self.pdca_dend_prior_mode not in valid_dend_prior_modes:
             raise ValueError(
@@ -246,7 +199,7 @@ class PhaseDeformableContextAttention(nn.Module):
                 % (valid_dend_prior_modes, self.pdca_dend_prior_mode)
             )
 
-        valid_dend_descriptor_modes = ("mean", "mean_std", "raw", "delta")
+        valid_dend_descriptor_modes = ("mean", "mean_std", "raw")
         self.pdca_dend_prior_descriptor = str(pdca_dend_prior_descriptor)
         if self.pdca_dend_prior_descriptor not in valid_dend_descriptor_modes:
             raise ValueError(
@@ -263,39 +216,17 @@ class PhaseDeformableContextAttention(nn.Module):
             )
 
         self.pdca_dend_prior_detach = bool(pdca_dend_prior_detach)
-        self.pdca_dend_prior_source_weight = float(pdca_dend_prior_source_weight)
-        self.pdca_dend_prior_point_weight = float(pdca_dend_prior_point_weight)
         self.pdca_dend_prior_sim_weight = float(pdca_dend_prior_sim_weight)
         self.pdca_dend_prior_diff_weight = float(pdca_dend_prior_diff_weight)
         self.pdca_dend_prior_use_conf_gate = bool(pdca_dend_prior_use_conf_gate)
         self.pdca_dend_prior_conf_beta = float(pdca_dend_prior_conf_beta)
         self.pdca_dend_prior_conf_tau = float(pdca_dend_prior_conf_tau)
-        self.pdca_dend_prior_use_offset_gate = bool(pdca_dend_prior_use_offset_gate)
-        self.pdca_dend_prior_center_point = bool(pdca_dend_prior_center_point)
-        self.pdca_dend_prior_clip = float(pdca_dend_prior_clip)
         self.pdca_dend_prior_affect_null = bool(pdca_dend_prior_affect_null)
         self.pdca_dend_prior_stats = bool(pdca_dend_prior_stats)
 
-        if self.pdca_dend_prior_source_weight < 0:
-            raise ValueError("pdca_dend_prior_source_weight must be non-negative")
-        if self.pdca_dend_prior_point_weight < 0:
-            raise ValueError("pdca_dend_prior_point_weight must be non-negative")
-        if self.pdca_dend_prior_sim_weight < 0:
-            raise ValueError("pdca_dend_prior_sim_weight must be non-negative")
-        if self.pdca_dend_prior_diff_weight < 0:
-            raise ValueError("pdca_dend_prior_diff_weight must be non-negative")
-        if self.pdca_dend_prior_conf_beta <= 0:
-            raise ValueError("pdca_dend_prior_conf_beta must be positive")
-        if self.pdca_dend_prior_conf_tau < 0:
-            raise ValueError("pdca_dend_prior_conf_tau must be non-negative")
-        if self.pdca_dend_prior_clip < 0:
-            raise ValueError("pdca_dend_prior_clip must be non-negative")
-        if self.pdca_dend_prior_affect_null:
-            raise ValueError("pdca_dend_prior_affect_null=True is not implemented in V2.1 clean module")
-
-        prior_alpha = float(alpha) if pdca_dend_prior_alpha is None else float(pdca_dend_prior_alpha)
-        self.alpha = nn.Parameter(torch.tensor(prior_alpha))
-
+        # Keep one learnable scalar for the dendritic prior.
+        # If pdca_dend_prior_mode="none", this parameter is not used in forward.
+        self.alpha = nn.Parameter(torch.tensor(float(pdca_dend_prior_alpha)))
         self.attn_head = nn.Sequential(
             nn.Conv2d(4 * self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
@@ -309,7 +240,7 @@ class PhaseDeformableContextAttention(nn.Module):
         self.null_logit_head = nn.Sequential(
             nn.Conv2d(self.channels, hidden, kernel_size=1, bias=False),
             _make_norm2d(hidden, norm=norm, num_groups=norm_groups),
-            Q_IFNode(surrogate_function=Quant()),
+            Q_IFNode(surrogate_function=Quant()),   #nn.GELU(),
             nn.Conv2d(hidden, self.num_heads * self.num_points, kernel_size=1, bias=True),
         )
         nn.init.zeros_(self.null_logit_head[-1].weight)
@@ -355,7 +286,6 @@ class PhaseDeformableContextAttention(nn.Module):
     def _new_aux() -> AuxDict:
         return {
             "source_weights": {},
-            "dend_prior": {},
         }
 
     @staticmethod
@@ -381,6 +311,7 @@ class PhaseDeformableContextAttention(nn.Module):
         value_g = value.view(B, G, Cg, H, W).unsqueeze(2).expand(B, G, K, Cg, H, W)
         value_g = value_g.contiguous().view(B * G * K, Cg, H, W)
 
+        # align_corners=True maps pixel offsets with scale 2/(size-1).
         xs = torch.linspace(-1.0, 1.0, W, dtype=offset.dtype, device=offset.device)
         ys = torch.linspace(-1.0, 1.0, H, dtype=offset.dtype, device=offset.device)
         yy, xx = torch.meshgrid(ys, xs, indexing="ij")
@@ -403,6 +334,16 @@ class PhaseDeformableContextAttention(nn.Module):
         )
         return sampled.view(B, G, K, Cg, H, W)
 
+
+
+    # def _apply_dendritic_logit_prior(self, logits, target_idx, source_idx, offset, dendritic_guidance, H, W):
+    #
+    #     D_t = dendritic_guidance[target_idx]  # [B,1,H,W]
+    #     D_s = dendritic_guidance[source_idx]  # [B,1,H,W]
+    #
+    #     prior = -torch.abs(D_t - D_s)  # [B,1,H,W]
+    #     logits = logits + self.alpha * prior.unsqueeze(1)
+    #     return logits
     def _prepare_dendritic_descriptor(
         self,
         K_GATE,
@@ -444,45 +385,37 @@ class PhaseDeformableContextAttention(nn.Module):
         if kg.ndim == 5:
             if kg.shape[0] != N or kg.shape[1] != B:
                 raise ValueError(
-                    "K_GATE [N,B,C,H,W] shape mismatch: got %r, expected N=%d, B=%d"
-                    % (tuple(kg.shape), N, B)
+                    "K_GATE [N,B,C,H,W] shape mismatch: "
+                    f"got {tuple(kg.shape)}, expected N={N}, B={B}"
                 )
             desc = kg
         elif kg.ndim == 4:
             if kg.shape[0] != N * B:
                 raise ValueError(
-                    "K_GATE [N*B,C,H,W] shape mismatch: got first dim=%d, expected %d"
-                    % (kg.shape[0], N * B)
+                    "K_GATE [N*B,C,H,W] shape mismatch: "
+                    f"got first dim={kg.shape[0]}, expected {N * B}"
                 )
             desc = kg.reshape(N, B, kg.shape[1], kg.shape[2], kg.shape[3]).contiguous()
         else:
             raise ValueError("K_GATE must be Tensor/list with 4D or 5D tensors")
 
         if desc.shape[-2:] != (H, W):
-            desc_flat = desc.flatten(0, 1)
-            desc_flat = F.interpolate(desc_flat, size=(H, W), mode="bilinear", align_corners=False)
-            desc = desc_flat.reshape(N, B, desc_flat.shape[1], H, W).contiguous()
+            desc = desc.flatten(0, 1)
+            desc = F.interpolate(desc, size=(H, W), mode="bilinear", align_corners=False)
+            desc = desc.reshape(N, B, desc.shape[1], H, W).contiguous()
 
         if self.pdca_dend_prior_detach:
             desc = desc.detach()
 
-        if self.pdca_dend_prior_descriptor == "delta":
-            # K is a frequency-branch gain map with neutral value 1.
-            # Use K-1 so that the descriptor represents enhancement/suppression.
-            desc = desc - 1.0
-
-        elif self.pdca_dend_prior_descriptor == "mean":
+        if self.pdca_dend_prior_descriptor == "mean":
             desc = desc.mean(dim=2, keepdim=True)
-
         elif self.pdca_dend_prior_descriptor == "mean_std":
             mean = desc.mean(dim=2, keepdim=True)
             var = desc.float().var(dim=2, keepdim=True, unbiased=False).to(dtype=dtype)
             std = torch.sqrt(var.clamp_min(1e-6))
             desc = torch.cat([mean, std], dim=2)
-
         elif self.pdca_dend_prior_descriptor == "raw":
             pass
-
         else:
             raise ValueError("Unsupported pdca_dend_prior_descriptor")
 
@@ -500,7 +433,11 @@ class PhaseDeformableContextAttention(nn.Module):
 
         return desc
 
-    def _sample_dendritic_descriptor(self, dend_source: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+    def _sample_dendritic_descriptor(
+        self,
+        dend_source: torch.Tensor,
+        offset: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Sample dendritic descriptor using the same PDCA offsets.
 
@@ -512,9 +449,15 @@ class PhaseDeformableContextAttention(nn.Module):
             sampled:     [B,G,K,Cd,H,W]
         """
         if dend_source.ndim != 4:
-            raise ValueError("dend_source must be [B,Cd,H,W], got %r" % (tuple(dend_source.shape),))
+            raise ValueError(
+                "dend_source must be [B,Cd,H,W], got %r"
+                % (tuple(dend_source.shape),)
+            )
         if offset.ndim != 6:
-            raise ValueError("offset must be [B,G,K,2,H,W], got %r" % (tuple(offset.shape),))
+            raise ValueError(
+                "offset must be [B,G,K,2,H,W], got %r"
+                % (tuple(offset.shape),)
+            )
 
         B, Cd, H, W = dend_source.shape
         Bo, G, K, two, Ho, Wo = offset.shape
@@ -552,21 +495,19 @@ class PhaseDeformableContextAttention(nn.Module):
             padding_mode="border",
             align_corners=True,
         )
+
         return sampled.view(B, G, K, Cd, H, W)
 
     def _target_dend_confidence(self, dend_target: torch.Tensor) -> torch.Tensor:
         """
-        Estimate target structural confidence.
+        Estimate target structural confidence from descriptor dispersion.
 
         Args:
             dend_target: [B,Cd,H,W]
 
         Return:
-            confidence: [B,1,1,H,W], broadcastable to [B,G,K,H,W]
+            confidence:  [B,1,1,H,W], broadcastable to [B,G,K,H,W]
         """
-        if dend_target.ndim != 4:
-            raise ValueError("dend_target must be [B,Cd,H,W], got %r" % (tuple(dend_target.shape),))
-
         if dend_target.shape[1] <= 1:
             raw_conf = dend_target.abs().mean(dim=1, keepdim=True)
         else:
@@ -575,214 +516,21 @@ class PhaseDeformableContextAttention(nn.Module):
             )
 
         conf = torch.sigmoid(
-            self.pdca_dend_prior_conf_beta * (raw_conf - self.pdca_dend_prior_conf_tau)
+            self.pdca_dend_prior_conf_beta
+            * (raw_conf - self.pdca_dend_prior_conf_tau)
         )
         return conf.unsqueeze(1)
 
-    # def _offset_reliability_gate(self, offset: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Softly down-weight dendritic priors from large-offset samples.
-    #
-    #     Args:
-    #         offset: [B,G,K,2,H,W]
-    #
-    #     Return:
-    #         gate:   [B,G,K,H,W]
-    #     """
-    #     if offset.ndim != 6:
-    #         raise ValueError("offset must be [B,G,K,2,H,W], got %r" % (tuple(offset.shape),))
-    #
-    #     if not self.pdca_dend_prior_use_offset_gate:
-    #         return offset.new_ones(
-    #             offset.shape[0], offset.shape[1], offset.shape[2], offset.shape[4], offset.shape[5]
-    #         )
-    #
-    #     offset_norm = torch.sqrt((offset.float() ** 2).sum(dim=3).clamp_min(1e-6))
-    #     offset_norm = offset_norm / max(float(self.offset_radius), 1e-6)
-    #     return torch.exp(-offset_norm.clamp_min(0.0)).to(dtype=offset.dtype)
-    def _offset_reliability_gate(self, offset: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            offset: [B,G,K,2,H,W]
-
-        Return:
-            gate: [B,G,K,H,W]
-        """
-        if not getattr(self, "pdca_dend_prior_use_offset_gate", True):
-            return offset.new_ones(
-                offset.shape[0],
-                offset.shape[1],
-                offset.shape[2],
-                offset.shape[4],
-                offset.shape[5],
-            )
-
-        norm = torch.sqrt((offset.float() ** 2).sum(dim=3).clamp_min(1e-6))
-        norm = norm / max(float(self.offset_radius), 1e-6)
-        return torch.exp(-norm.clamp_min(0.0)).to(dtype=offset.dtype)
-    # def _apply_dendritic_logit_prior(
-    #     self,
-    #     logits: torch.Tensor,
-    #     target_idx: int,
-    #     source_idx: int,
-    #     offset: torch.Tensor,
-    #     dendritic_descriptor: Optional[torch.Tensor],
-    # ):
-    #     """
-    #     Apply dendritic logit prior.
-    #
-    #     Modes:
-    #         none:
-    #             no prior.
-    #         source:
-    #             V1 source-level prior.
-    #         offset_sim:
-    #             legacy/debug point-level sim prior.
-    #         offset_dual:
-    #             legacy/debug stabilized dual prior: sim - diff penalty.
-    #         offset_residual:
-    #             V2.1 source-anchored offset-aligned point residual prior.
-    #
-    #     Args:
-    #         logits:               [B,G,K,H,W]
-    #         offset:               [B,G,K,2,H,W]
-    #         dendritic_descriptor: [N,B,Cd,H,W]
-    #
-    #     Returns:
-    #         logits_new: [B,G,K,H,W]
-    #         stats: dict[str, Tensor] or None
-    #     """
-    #     mode = self.pdca_dend_prior_mode
-    #     if mode == "none" or dendritic_descriptor is None:
-    #         return logits, None
-    #
-    #     if logits.ndim != 5:
-    #         raise ValueError("logits must be [B,G,K,H,W], got %r" % (tuple(logits.shape),))
-    #     if offset.ndim != 6:
-    #         raise ValueError("offset must be [B,G,K,2,H,W], got %r" % (tuple(offset.shape),))
-    #     if dendritic_descriptor.ndim != 5:
-    #         raise ValueError(
-    #             "dendritic_descriptor must be [N,B,Cd,H,W], got %r"
-    #             % (tuple(dendritic_descriptor.shape),)
-    #         )
-    #
-    #     D_t = dendritic_descriptor[target_idx]  # [B,Cd,H,W]
-    #     D_s = dendritic_descriptor[source_idx]  # [B,Cd,H,W]
-    #
-    #     source_dist = (D_t - D_s).abs().mean(dim=1, keepdim=True)  # [B,1,H,W]
-    #     source_prior = -torch.tanh(source_dist.float()).to(dtype=logits.dtype)  # [B,1,H,W]
-    #     source_prior = source_prior.unsqueeze(1).expand_as(logits)  # [B,G,K,H,W]
-    #
-    #     sim = None
-    #     point_dist = None
-    #     point_match = None
-    #     point_residual = None
-    #     conf = None
-    #     offset_gate = None
-    #
-    #     if mode == "source":
-    #         prior = self.pdca_dend_prior_source_weight * source_prior
-    #
-    #     elif mode in ("offset_sim", "offset_dual", "offset_residual"):
-    #         D_s_sampled = self._sample_dendritic_descriptor(D_s, offset)  # [B,G,K,Cd,H,W]
-    #         D_t_expand = D_t.unsqueeze(1).unsqueeze(2)  # [B,1,1,Cd,H,W]
-    #
-    #         sim = F.cosine_similarity(
-    #             D_t_expand.float(),
-    #             D_s_sampled.float(),
-    #             dim=3,
-    #             eps=1e-6,
-    #         ).to(dtype=logits.dtype)  # [B,G,K,H,W]
-    #
-    #         point_dist = (D_t_expand - D_s_sampled).abs().mean(dim=3)  # [B,G,K,H,W]
-    #         point_dist = torch.tanh(point_dist.float()).to(dtype=logits.dtype)
-    #
-    #         if mode == "offset_sim":
-    #             point_match = self.pdca_dend_prior_sim_weight * sim
-    #         elif mode == "offset_dual":
-    #             point_match = self.pdca_dend_prior_sim_weight * sim - self.pdca_dend_prior_diff_weight * point_dist
-    #         else:
-    #             # Recommended V2.1. Do not positively reward raw difference.
-    #             point_match = sim - point_dist
-    #
-    #         if self.pdca_dend_prior_center_point:
-    #             point_residual = point_match - point_match.mean(dim=2, keepdim=True)
-    #         else:
-    #             point_residual = point_match
-    #
-    #         if self.pdca_dend_prior_use_conf_gate:
-    #             conf = self._target_dend_confidence(D_t)  # [B,1,1,H,W]
-    #         else:
-    #             conf = logits.new_ones(logits.shape[0], 1, 1, logits.shape[-2], logits.shape[-1])
-    #
-    #         offset_gate = self._offset_reliability_gate(offset)  # [B,G,K,H,W]
-    #         point_prior = point_residual * conf * offset_gate
-    #
-    #         prior = (
-    #             self.pdca_dend_prior_source_weight * source_prior
-    #             + self.pdca_dend_prior_point_weight * point_prior
-    #         )
-    #     else:
-    #         raise ValueError("Unsupported pdca_dend_prior_mode: %r" % mode)
-    #
-    #     if self.pdca_dend_prior_clip > 0:
-    #         prior = prior.clamp(
-    #             min=-float(self.pdca_dend_prior_clip),
-    #             max=float(self.pdca_dend_prior_clip),
-    #         )
-    #
-    #     alpha = self.alpha.to(dtype=logits.dtype).clamp_min(0.0)
-    #     logits_new = logits + alpha * prior.to(dtype=logits.dtype)
-    #
-    #     stats = None
-    #     if self.pdca_dend_prior_stats:
-    #         stats = {}
-    #         prior_det = prior.detach().float()
-    #         stats["prior_abs_mean"] = prior_det.abs().mean()
-    #         stats["prior_mean"] = prior_det.mean()
-    #         stats["prior_std"] = prior_det.std(unbiased=False)
-    #         stats["alpha"] = alpha.detach().float()
-    #
-    #         source_det = source_prior.detach().float()
-    #         stats["source_prior_abs_mean"] = source_det.abs().mean()
-    #         stats["source_prior_mean"] = source_det.mean()
-    #
-    #         if sim is not None:
-    #             stats["sim_mean"] = sim.detach().float().mean()
-    #         if point_dist is not None:
-    #             stats["point_dist_mean"] = point_dist.detach().float().mean()
-    #         if point_match is not None:
-    #             point_match_det = point_match.detach().float()
-    #             stats["point_match_mean"] = point_match_det.mean()
-    #             stats["point_match_std"] = point_match_det.std(unbiased=False)
-    #         if point_residual is not None:
-    #             point_residual_det = point_residual.detach().float()
-    #             stats["point_residual_abs_mean"] = point_residual_det.abs().mean()
-    #             stats["point_residual_std"] = point_residual_det.std(unbiased=False)
-    #         if conf is not None:
-    #             stats["conf_mean"] = conf.detach().float().mean()
-    #         if offset_gate is not None:
-    #             stats["offset_gate_mean"] = offset_gate.detach().float().mean()
-    #
-    #     return logits_new, stats
     def _apply_dendritic_logit_prior(
-            self,
-            logits: torch.Tensor,
-            target_idx: int,
-            source_idx: int,
-            offset: torch.Tensor,
-            dendritic_descriptor: Optional[torch.Tensor],
+        self,
+        logits: torch.Tensor,
+        target_idx: int,
+        source_idx: int,
+        offset: torch.Tensor,
+        dendritic_descriptor: Optional[torch.Tensor],
     ):
         """
-        Dendritic logit prior.
-
-        Recommended new mode:
-            offset_gate
-
-        Principle:
-            K is a frequency-branch modulation gain, not a semantic descriptor.
-            Therefore K should not directly generate point logits.
-            It should gate the reliability of PDCA's own point-level logits residual.
+        Apply source-level V1 or offset-aligned V2 dendritic logit prior.
 
         Args:
             logits:               [B,G,K,H,W]
@@ -791,52 +539,25 @@ class PhaseDeformableContextAttention(nn.Module):
 
         Returns:
             logits_new: [B,G,K,H,W]
-            stats: dict or None
+            stats: dict[str, Tensor]
         """
-        mode = self.pdca_dend_prior_mode
-        if mode == "none" or dendritic_descriptor is None:
+        if self.pdca_dend_prior_mode == "none" or dendritic_descriptor is None:
             return logits, None
-
-        if logits.ndim != 5:
-            raise ValueError("logits must be [B,G,K,H,W], got %r" % (tuple(logits.shape),))
-        if offset.ndim != 6:
-            raise ValueError("offset must be [B,G,K,2,H,W], got %r" % (tuple(offset.shape),))
-        if dendritic_descriptor.ndim != 5:
-            raise ValueError(
-                "dendritic_descriptor must be [N,B,Cd,H,W], got %r"
-                % (tuple(dendritic_descriptor.shape),)
-            )
 
         D_t = dendritic_descriptor[target_idx]  # [B,Cd,H,W]
         D_s = dendritic_descriptor[source_idx]  # [B,Cd,H,W]
 
-        source_weight = float(getattr(self, "pdca_dend_prior_source_weight", 1.0))
-        point_weight = float(getattr(self, "pdca_dend_prior_point_weight", 0.25))
-        sim_weight = float(getattr(self, "pdca_dend_prior_sim_weight", 1.0))
-        diff_weight = float(getattr(self, "pdca_dend_prior_diff_weight", 0.25))
+        stats = {}
 
-        use_conf_gate = bool(getattr(self, "pdca_dend_prior_use_conf_gate", True))
-        center_point = bool(getattr(self, "pdca_dend_prior_center_point", True))
-        clip_value = float(getattr(self, "pdca_dend_prior_clip", 2.0))
+        if self.pdca_dend_prior_mode == "source":
+            # V1-compatible source-level prior.
+            diff = (D_t - D_s).abs().mean(dim=1, keepdim=True)  # [B,1,H,W]
+            prior = -diff.unsqueeze(1)  # [B,1,1,H,W]
+            prior = prior.expand_as(logits)
+            sim = None
 
-        # V1 source-level anchor. Keep it as close as possible to V1:
-        # no tanh, no point sampling, no offset gate.
-        base_dist = (D_t - D_s).abs().mean(dim=1, keepdim=True)  # [B,1,H,W]
-        source_prior = -base_dist.unsqueeze(1).expand_as(logits)  # [B,G,K,H,W]
-
-        sim = None
-        point_dist = None
-        point_match = None
-        point_residual = None
-        reliability = None
-        conf = None
-        offset_gate = None
-        logit_residual = None
-
-        if mode == "source":
-            prior = source_weight * source_prior
-
-        elif mode in ("offset_sim", "offset_dual", "offset_residual", "offset_gate"):
+        elif self.pdca_dend_prior_mode in ("offset_sim", "offset_dual"):
+            # V2: use the same offsets as PDCA source feature sampling.
             D_s_sampled = self._sample_dendritic_descriptor(D_s, offset)  # [B,G,K,Cd,H,W]
             D_t_expand = D_t.unsqueeze(1).unsqueeze(2)  # [B,1,1,Cd,H,W]
 
@@ -847,145 +568,63 @@ class PhaseDeformableContextAttention(nn.Module):
                 eps=1e-6,
             ).to(dtype=logits.dtype)  # [B,G,K,H,W]
 
-            point_dist = (D_t_expand - D_s_sampled).abs().mean(dim=3)  # [B,G,K,H,W]
-            point_dist_tanh = torch.tanh(point_dist.float()).to(dtype=logits.dtype)
+            diff = (D_t_expand - D_s_sampled).abs().mean(dim=3)  # [B,G,K,H,W]
+            diff = torch.tanh(diff.float()).to(dtype=logits.dtype)
 
-            if mode == "offset_sim":
-                point_match = sim
-
-            elif mode == "offset_dual":
-                # Preserve your current best V2 behavior for comparison.
-                point_match = sim_weight * sim + diff_weight * point_dist_tanh
-
-            elif mode == "offset_residual":
-                # Preserve previous V21 for comparison.
-                point_match = sim - point_dist_tanh
-
-            elif mode == "offset_gate":
-                # New recommendation:
-                # K-derived reliability gates PDCA's own point preference.
-                # It does not directly create a new point logit.
-                reliability = torch.exp(-point_dist.float()).to(dtype=logits.dtype)
-
-                if use_conf_gate:
-                    # For K-delta descriptor, |D_t| is frequency modulation energy.
-                    target_energy = D_t.abs().mean(dim=1, keepdim=True)  # [B,1,H,W]
-                    conf = torch.sigmoid(
-                        self.pdca_dend_prior_conf_beta
-                        * (target_energy - self.pdca_dend_prior_conf_tau)
-                    ).unsqueeze(1)  # [B,1,1,H,W]
-                else:
-                    conf = logits.new_ones(
-                        logits.shape[0],
-                        1,
-                        1,
-                        logits.shape[-2],
-                        logits.shape[-1],
-                    )
-
-                if hasattr(self, "_offset_reliability_gate"):
-                    offset_gate = self._offset_reliability_gate(offset)
-                else:
-                    offset_gate = logits.new_ones_like(reliability)
-
-                reliability = reliability * conf * offset_gate
-
-                # Use PDCA's own logits residual as the point direction.
-                # K only decides whether this residual is reliable.
-                logit_residual = logits - logits.mean(dim=2, keepdim=True)
-                logit_std = logit_residual.float().std(dim=2, keepdim=True, unbiased=False)
-                logit_residual = torch.tanh(
-                    logit_residual.float() / logit_std.clamp_min(1e-4)
-                ).to(dtype=logits.dtype)
-
-                point_match = reliability * logit_residual
-
+            if self.pdca_dend_prior_mode == "offset_sim":
+                prior = self.pdca_dend_prior_sim_weight * sim
             else:
-                raise ValueError("Unsupported pdca_dend_prior_mode: %r" % mode)
+                # Dual prior:
+                # sim rewards structural consistency;
+                # diff softly allows structural-change evidence.
+                prior = (
+                    self.pdca_dend_prior_sim_weight * sim
+                    + self.pdca_dend_prior_diff_weight * diff
+                )
 
-            if center_point:
-                point_residual = point_match - point_match.mean(dim=2, keepdim=True)
-            else:
-                point_residual = point_match
-
-            prior = source_weight * source_prior + point_weight * point_residual
+            if self.pdca_dend_prior_use_conf_gate:
+                conf = self._target_dend_confidence(D_t)  # [B,1,1,H,W]
+                prior = prior * conf
 
         else:
-            raise ValueError("Unsupported pdca_dend_prior_mode: %r" % mode)
-
-        if clip_value > 0:
-            prior = prior.clamp(min=-clip_value, max=clip_value)
+            raise ValueError("Unsupported pdca_dend_prior_mode")
 
         logits_new = logits + self.alpha.to(dtype=logits.dtype) * prior.to(dtype=logits.dtype)
 
-        stats = None
         if self.pdca_dend_prior_stats:
-            stats = {}
             prior_det = prior.detach().float()
             stats["prior_abs_mean"] = prior_det.abs().mean()
             stats["prior_mean"] = prior_det.mean()
             stats["prior_std"] = prior_det.std(unbiased=False)
             stats["alpha"] = self.alpha.detach().float()
-
-            source_det = source_prior.detach().float()
-            stats["source_prior_abs_mean"] = source_det.abs().mean()
-            stats["source_prior_mean"] = source_det.mean()
-
             if sim is not None:
                 stats["sim_mean"] = sim.detach().float().mean()
-            if point_dist is not None:
-                stats["point_dist_mean"] = point_dist.detach().float().mean()
-            if reliability is not None:
-                rel = reliability.detach().float()
-                stats["reliability_mean"] = rel.mean()
-                stats["reliability_std"] = rel.std(unbiased=False)
-            if logit_residual is not None:
-                lr = logit_residual.detach().float()
-                stats["logit_residual_abs_mean"] = lr.abs().mean()
-                stats["logit_residual_std"] = lr.std(unbiased=False)
-            if point_match is not None:
-                pm = point_match.detach().float()
-                stats["point_match_mean"] = pm.mean()
-                stats["point_match_std"] = pm.std(unbiased=False)
-            if point_residual is not None:
-                pr = point_residual.detach().float()
-                stats["point_residual_abs_mean"] = pr.abs().mean()
-                stats["point_residual_std"] = pr.std(unbiased=False)
-            if conf is not None:
-                stats["conf_mean"] = conf.detach().float().mean()
-            if offset_gate is not None:
-                stats["offset_gate_mean"] = offset_gate.detach().float().mean()
+            stats["diff_mean"] = diff.detach().float().mean()
 
         return logits_new, stats
     def forward(
         self,
         feat: torch.Tensor,
-        K_GATE=None,
+        K_GATE: torch.Tensor,
         return_aux: Optional[bool] = None,
         detach_aux: bool = False,
     ):
         if return_aux is None:
             return_aux = self.return_aux_default
         collect_aux = bool(return_aux)
-
+        pre_feat = feat
         if feat.ndim != 5:
-            raise ValueError(
-                "PhaseDeformableContextAttention expects [N,B,C,H,W], got %r"
-                % (tuple(feat.shape),)
-            )
+            raise ValueError("PhaseDeformableContextAttention expects [N,B,C,H,W], got %r" % (tuple(feat.shape),))
         N, B, C, H, W = feat.shape
+        feat = self.act(feat)
         if N != len(self.phase_names):
             raise ValueError("N=%d does not match phase_names=%r" % (N, self.phase_names))
         if C != self.channels:
             raise ValueError("Expected C=%d, got C=%d" % (self.channels, C))
 
-        pre_feat = feat
-        feat = self.act(feat)
-
         aux = self._new_aux() if collect_aux else {}
         residual_by_phase = [torch.zeros_like(feat[idx]) for idx in range(N)]
         Cg = C // self.num_heads
-
         dendritic_descriptor = self._prepare_dendritic_descriptor(
             K_GATE=K_GATE,
             N=N,
@@ -1021,29 +660,33 @@ class PhaseDeformableContextAttention(nn.Module):
                 offset = torch.tanh(offset) * self.offset_radius
                 if self.detach_offsets:
                     offset = offset.detach()
-
+                # dendritic_guidance = torch.cat(K_GATE, dim=1).reshape(N, B, -1, H, W).mean(dim=2,
+                #                                                                                        keepdim=True)
                 logits = self.attn_head(evidence).view(B, self.num_heads, self.num_points, H, W)
-                logits, dend_prior_stats = self._apply_dendritic_logit_prior(
+                logits, _ = self._apply_dendritic_logit_prior(
                     logits=logits,
                     target_idx=target_idx,
                     source_idx=src_idx,
                     offset=offset,
                     dendritic_descriptor=dendritic_descriptor,
                 )
-
-                if collect_aux and dend_prior_stats is not None:
-                    direction_key = "%s<-%s" % (target_name, src_name)
-                    aux["dend_prior"][direction_key] = {
-                        key: self._maybe_detach(value, bool(detach_aux))
-                        for key, value in dend_prior_stats.items()
-                    }
-
+                # logits = self._apply_dendritic_logit_prior(
+                #     logits=logits,
+                #     target_idx=target_idx,
+                #     source_idx=src_idx,
+                #     offset=offset,
+                #     dendritic_guidance=dendritic_guidance,
+                #     H=H,
+                #     W=W,
+                # )
                 value = self.value_proj(source)
                 sampled = self._deformable_sample_vectorized(value, offset)
 
+
+
+
                 logits_by_source.append(logits)
                 sampled_by_source.append(sampled)
-
             if len(logits_by_source) == 0:
                 continue
 
@@ -1052,7 +695,9 @@ class PhaseDeformableContextAttention(nn.Module):
             joint_weights = torch.softmax(
                 logits_stacked.view(B, self.num_heads, Q * self.num_points, H, W),
                 dim=2,
-            ).view(B, self.num_heads, Q, self.num_points, H, W)
+            ).view(
+                B, self.num_heads, Q, self.num_points, H, W
+            )
 
             sampled_stacked = torch.stack(sampled_by_source, dim=2)
 
@@ -1070,10 +715,8 @@ class PhaseDeformableContextAttention(nn.Module):
             residual_by_phase[target_idx] = residual_by_phase[target_idx] + self.out_proj(context)
 
             if collect_aux:
-                aux["source_weights"][target_name] = self._maybe_detach(
-                    joint_weights.sum(dim=3),
-                    bool(detach_aux),
-                )
+                aux["source_weights"][target_name] = self._maybe_detach(joint_weights.sum(dim=3), bool(detach_aux))
 
         residual = torch.stack(residual_by_phase, dim=0)
         return pre_feat + self.residual_scale * residual, aux
+        # return pre_feat + residual, aux

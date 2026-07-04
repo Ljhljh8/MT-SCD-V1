@@ -21,8 +21,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import torch
 import torch.nn as nn
 
-from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
-from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22 import PhaseDeformableContextAttention
+from models.dendsn_lifFADC_Snn_v2_stcd_VDend1 import DendFADCConv2d
+from models.Encoders.phase_deformable_context_attention_fordecoder_clean import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 
@@ -108,8 +108,6 @@ class DendriticScaleAdapter(nn.Module):
     Output:
         y: [N,B,C,H,W]
 
-    Important:
-        SN_CLS=False, so DendFADCConv2d is not used as vanilla LIF over N.
     """
 
     def __init__(
@@ -128,6 +126,20 @@ class DendriticScaleAdapter(nn.Module):
         dend_soma_type: str = "q_if",
         dend_soma_cfg: Optional[dict] = None,
         Down_K: bool = False,
+
+        k_mode='k_mode',
+
+        task_calibrated: bool = False,
+        stc_detach_context: bool = True,
+        stc_detach_k_gate: bool = True,
+        stc_update_k_from_prev: bool = False,
+        stc_modulate_k: bool = True,
+        stc_residual_init: float = 0.0,
+        stc_k_scale_init: float = 0.0,
+        stc_gate_kernel_size: int = 3,
+        stc_gate_temperature: float = 1.0,
+        stc_use_noise_suppression: bool = True,
+        reset_before_forward: bool = False,
     ):
         super().__init__()
         self.channels = int(channels)
@@ -136,6 +148,7 @@ class DendriticScaleAdapter(nn.Module):
         if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
             raise ValueError("dend_soma_cfg must be a dict or None")
         self.dend_soma_cfg = dict(dend_soma_cfg or {})
+        self.k_mode = k_mode
 
         if not self.use_dendritic:
             self.adapter = nn.Identity()
@@ -177,7 +190,20 @@ class DendriticScaleAdapter(nn.Module):
             fs_cfg=default_fs_cfg,
             calculate_next_k=True,
             SN_CLS=True,
-            Down_K=Down_K
+            Down_K=Down_K,
+            # k_mode=k_mode,
+
+            task_calibrated=task_calibrated,
+            stc_detach_context=stc_detach_context,
+            stc_detach_k_gate=stc_detach_k_gate,
+            stc_update_k_from_prev=stc_update_k_from_prev,
+            stc_modulate_k=stc_modulate_k,
+            stc_residual_init=stc_residual_init,
+            stc_k_scale_init=stc_k_scale_init,
+            stc_gate_kernel_size=stc_gate_kernel_size,
+            stc_gate_temperature=stc_gate_temperature,
+            stc_use_noise_suppression=stc_use_noise_suppression,
+            reset_before_forward=reset_before_forward,
         )
 
         self.post_norm = _make_norm2d(self.channels, norm=norm, num_groups=norm_groups)
@@ -192,7 +218,8 @@ class DendriticScaleAdapter(nn.Module):
         if not self.use_dendritic:
             return x
         x_pre = x
-        x = self.act(x)
+        if not self.k_mode == 'NoQlif':
+            x = self.act(x)
         N, B, C, H, W = x.shape
         if C != self.channels:
             raise ValueError(f"Expected C={self.channels}, got C={C}")
@@ -240,13 +267,20 @@ class FDPCEncoder(nn.Module):
         return_aux_default: bool = False,
         relation_mode: str = "pdca",
         pdca_cfg: Optional[dict] = None,
-        pdca_dend_prior_source_weight=1.0,
-        pdca_dend_prior_point_weight=0.25,
-        pdca_dend_prior_use_offset_gate=True,
-        pdca_dend_prior_center_point=True,
-        pdca_dend_prior_clip=2.0,
+        k_mode='none',
 
 
+        task_calibrated: bool = False,
+        stc_detach_context: bool = True,
+        stc_detach_k_gate: bool = True,
+        stc_update_k_from_prev: bool = False,
+        stc_modulate_k: bool = True,
+        stc_residual_init: float = 0.0,
+        stc_k_scale_init: float = 0.0,
+        stc_gate_kernel_size: int = 3,
+        stc_gate_temperature: float = 1.0,
+        stc_use_noise_suppression: bool = True,
+        reset_before_forward: bool = False,
     ):
         super().__init__()
 
@@ -296,6 +330,19 @@ class FDPCEncoder(nn.Module):
                     dend_soma_type=dend_soma_type,
                     dend_soma_cfg=dend_soma_cfg,
                     Down_K=Down_K[s],
+                    k_mode=k_mode,
+
+                    task_calibrated=task_calibrated,
+                    stc_detach_context  = stc_detach_context,
+                    stc_detach_k_gate = stc_detach_k_gate,
+                    stc_update_k_from_prev  = stc_update_k_from_prev,
+                    stc_modulate_k = stc_modulate_k,
+                    stc_residual_init = stc_residual_init,
+                    stc_k_scale_init = stc_k_scale_init,
+                    stc_gate_kernel_size  = stc_gate_kernel_size,
+                    stc_gate_temperature = stc_gate_temperature,
+                    stc_use_noise_suppression  = stc_use_noise_suppression,
+                    reset_before_forward = reset_before_forward,
                 )
             )
 

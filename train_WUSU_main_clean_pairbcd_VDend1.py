@@ -80,29 +80,145 @@ def build_parser():
 
     parser.add_argument("--relation-mode", choices=["pdca"], default="pdca")
     parser.add_argument("--use-pdca-guided-pair-decoder", action="store_true")
-    parser.add_argument("--pdca-dend-prior-mode", default="offset_residual", choices=["none", "source","source_gain", "offset_sim", "offset_dual", "offset_residual", "offset_improve", "offset_gate"])
+    parser.add_argument("--pdca-dend-prior-mode", default="offset_dual", choices=["none", "source", "offset_sim", "offset_dual"])
     parser.add_argument("--pdca-dend-prior-alpha", type=float, default=1e-3)
     parser.add_argument("--pdca-dend-prior-detach", type=str2bool, default=True)
-    parser.add_argument("--pdca-dend-prior-descriptor", default="mean_std", choices=["mean", "mean_std", "raw", "delta", "gain"])
+    parser.add_argument("--pdca-dend-prior-descriptor", default="mean_std", choices=["mean", "mean_std", "raw"])
     parser.add_argument("--pdca-dend-prior-normalize", default="zscore", choices=["none", "zscore"])
-
-    ## pdca v21 add parm
-    parser.add_argument("--pdca-dend-prior-source-weight", type=float, default=1.0)
-    parser.add_argument("--pdca-dend-prior-point-weight", type=float, default=0.25)
-    ## pdca v21 add parm
     parser.add_argument("--pdca-dend-prior-sim-weight", type=float, default=1.0)
     parser.add_argument("--pdca-dend-prior-diff-weight", type=float, default=0.25)
     parser.add_argument("--pdca-dend-prior-use-conf-gate", type=str2bool, default=True)
     parser.add_argument("--pdca-dend-prior-conf-beta", type=float, default=4.0)
     parser.add_argument("--pdca-dend-prior-conf-tau", type=float, default=0.10)
-
-    ## pdca v21 add parm
-    parser.add_argument("--pdca-dend-prior-use-offset-gate", type=str2bool, default=True)
-    parser.add_argument("--pdca-dend-prior-center-point", type=str2bool, default=True)
-    parser.add_argument("--pdca-dend-prior-clip", type=float, default=2.0)
-    ## pdca v21 add parm
     parser.add_argument("--pdca-dend-prior-affect-null", type=str2bool, default=False)
     parser.add_argument("--pdca-dend-prior-stats", type=str2bool, default=False)
+    parser.add_argument("--k_mode", default="NoQlif", choices=["NoQlif", "sig16", "sig24", 'none'])
+    parser.add_argument(
+        "--task-calibrated", "--task_calibrated",
+        dest="task_calibrated",
+        type=str2bool,
+        default=True,
+        help=(
+            "Enable the proposed semantic-transition-calibrated dendritic neuron. "
+            "Default False preserves the old dendritic behavior."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-detach-context", "--stc_detach_context",
+        dest="stc_detach_context",
+        type=str2bool,
+        default=True,
+        help=(
+            "Detach temporal context features when forming STC evidence. "
+            "Default True is conservative under AMP/DDP and reduces unstable "
+            "cross-phase gradient coupling."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-detach-k-gate", "--stc_detach_k_gate",
+        dest="stc_detach_k_gate",
+        type=str2bool,
+        default=True,
+        help=(
+            "Detach STC evidence before modulating K. "
+            "Default True prevents downstream PDCA gradients from directly "
+            "forcing K to become a supervised change map."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-update-k-from-prev", "--stc_update_k_from_prev",
+        dest="stc_update_k_from_prev",
+        type=str2bool,
+        default=False,
+        help=(
+            "Update current K using previous K state. "
+            "Default False keeps the K path closest to the old model and avoids "
+            "introducing hidden temporal recurrence unless explicitly enabled."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-modulate-k", "--stc_modulate_k",
+        dest="stc_modulate_k",
+        type=str2bool,
+        default=True,
+        help=(
+            "Use STC evidence to modulate K before it is consumed by PDCA. "
+            "Default False avoids changing the old K guidance behavior."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-residual-init", "--stc_residual_init",
+        dest="stc_residual_init",
+        type=float,
+        default=0.01,
+        help=(
+            "Initial residual scale for STC feature correction. "
+            "Default 0.0 makes the initial network behavior close to the old model; "
+            "the parameter can be learned if implemented as a learnable scale."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-k-scale-init", "--stc_k_scale_init",
+        dest="stc_k_scale_init",
+        type=float,
+        default=0.01,
+        help=(
+            "Initial scale for STC modulation on K. "
+            "Default 0.0 prevents sudden K distribution shift at initialization."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-gate-kernel-size", "--stc_gate_kernel_size",
+        dest="stc_gate_kernel_size",
+        type=int,
+        default=3,
+        help=(
+            "Kernel size for local STC evidence/gate estimation. "
+            "Must be a positive odd integer. Default 3 is conservative."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-gate-temperature", "--stc_gate_temperature",
+        dest="stc_gate_temperature",
+        type=float,
+        default=1.0,
+        help=(
+            "Temperature for STC gate sigmoid/logit normalization. "
+            "Must be > 0. Default 1.0 avoids over-sharpened gates."
+        ),
+    )
+
+    parser.add_argument(
+        "--stc-use-noise-suppression", "--stc_use_noise_suppression",
+        dest="stc_use_noise_suppression",
+        type=str2bool,
+        default=True,
+        help=(
+            "Use the noise-suppression evidence branch inside STC-DendNeuron. "
+            "This only takes effect when --task-calibrated is true."
+        ),
+    )
+
+    parser.add_argument(
+        "--reset-before-forward", "--reset_before_forward",
+        dest="reset_before_forward",
+        type=str2bool,
+        default=False,
+        help=(
+            "Call reset_net/reset-like logic before the dendritic forward path if "
+            "the soma neuron is stateful. Default False preserves the existing "
+            "training-loop responsibility for reset_net and avoids hiding "
+            "cross-batch state behavior inside the module."
+        ),
+    )
 
     parser.add_argument("--seg-loss-weight", type=float, default=1.0)
     parser.add_argument("--pair-bcd-loss-weight", type=float, default=1.0)
@@ -314,7 +430,7 @@ def internal_pretrain_path():
 
 
 def build_model(args, RS, device):
-    from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean import GSTMSCD_WUSU as Net
+    from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean_VDend1 import GSTMSCD_WUSU as Net
 
     use_internal_pretrain = bool(args.pretrained)
     if use_internal_pretrain and not os.path.exists(internal_pretrain_path()):
@@ -351,12 +467,20 @@ def build_model(args, RS, device):
         pdca_dend_prior_conf_tau=args.pdca_dend_prior_conf_tau,
         pdca_dend_prior_affect_null=args.pdca_dend_prior_affect_null,
         pdca_dend_prior_stats=args.pdca_dend_prior_stats,
+        # TEST PARMTER   KE SHAN CHU
+        # k_mode = args.k_mode,
 
-        pdca_dend_prior_source_weight=args.pdca_dend_prior_source_weight,
-        pdca_dend_prior_point_weight=args.pdca_dend_prior_point_weight,
-        pdca_dend_prior_use_offset_gate=args.pdca_dend_prior_use_offset_gate,
-        pdca_dend_prior_center_point=args.pdca_dend_prior_center_point,
-        pdca_dend_prior_clip=args.pdca_dend_prior_clip,
+        task_calibrated=args.task_calibrated,
+        stc_detach_context=args.stc_detach_context,
+        stc_detach_k_gate=args.stc_detach_k_gate,
+        stc_update_k_from_prev=args.stc_update_k_from_prev,
+        stc_modulate_k=args.stc_modulate_k,
+        stc_residual_init=args.stc_residual_init,
+        stc_k_scale_init=args.stc_k_scale_init,
+        stc_gate_kernel_size=args.stc_gate_kernel_size,
+        stc_gate_temperature=args.stc_gate_temperature,
+        stc_use_noise_suppression=args.stc_use_noise_suppression,
+        reset_before_forward=args.reset_before_forward,
 
     )
     if args.pretrain_from:
@@ -528,7 +652,7 @@ def step_scheduler_epoch(ctx, epoch, metric):
 
 def build_loss_functions(args):
     from torch.nn import CrossEntropyLoss
-    from utils.loss import ChangeSimilarity, PairwiseBinaryChangeLoss
+    from utils.loss_ForDecoder import ChangeSimilarity, PairwiseBinaryChangeLoss
 
     return {
         "seg": CrossEntropyLoss(ignore_index=-1),
@@ -546,7 +670,7 @@ def should_update_optimizer(step, num_steps, accum_steps):
 
 
 def compute_losses(out1, out2, out3, change_logits_dict, masks, criteria, args):
-    from utils.loss import make_pairwise_change_targets
+    from utils.loss_ForDecoder import make_pairwise_change_targets
 
     mask1, mask2, mask3 = masks
     sem_targets = {
@@ -554,7 +678,7 @@ def compute_losses(out1, out2, out3, change_logits_dict, masks, criteria, args):
         "t2": mask2 - 1,
         "t3": mask3 - 1,
     }
-    pair_targets = make_pairwise_change_targets(sem_targets, ignore_index=-1)
+    pair_targets = make_pairwise_change_targets(sem_targets, ignore_index=99)
 
     loss_seg = (
         criteria["seg"](out1.float(), sem_targets["t1"])
@@ -647,7 +771,7 @@ def train_one_epoch(ctx, epoch):
                     step_timm_scheduler_update(ctx.scheduler, ctx.global_update_step)
             ctx.optimizer.zero_grad(set_to_none=True)
 
-        reset_snn_state(model, ctx.functional)
+        # reset_snn_state(model, ctx.functional)
         for key, value in stats.items():
             totals[key] += value
 
@@ -801,7 +925,7 @@ def save_checkpoint(ctx, epoch, val_stats):
         ctx.best_metric = score
     torch.save(checkpoint_payload(ctx, epoch), os.path.join(checkpoint_dir(args), "latest.pth"))
     if is_best:
-        best_name = "epoch%i_Score%.2f_mIOU%.2f_Sek%.2f_Fscd%.2f_OA%.2f.pth" % (
+        best_name = "Best Model: epoch%i_Score%.2f_mIOU%.2f_Sek%.2f_Fscd%.2f_OA%.2f.pth" % (
             epoch,
             val_stats["score"] * 100,
             val_stats["miou"] * 100,
@@ -809,6 +933,7 @@ def save_checkpoint(ctx, epoch, val_stats):
             val_stats["Fscd"] * 100,
             val_stats["OA"] * 100,
         )
+        print(best_name)
         torch.save(checkpoint_payload(ctx, epoch), os.path.join(checkpoint_dir(args), best_name))
 
 

@@ -471,8 +471,8 @@ class DendFADCConv2d(nn.Module):
             #     v_reset=0.0,
             #     detach_reset=detach_reset,
             # )
-            self.lif = MTSCDPRDNIIFNode()
-            # self.lif = Q_IFNode(surrogate_function=Quant())
+            # self.lif = MTSCDPRDNIIFNode()
+            self.lif = Q_IFNode(surrogate_function=Quant())
 
         if kh > 1 or kw > 1:
             self.conv_offset = nn.Conv2d(
