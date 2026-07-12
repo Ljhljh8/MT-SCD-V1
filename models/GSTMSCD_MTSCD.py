@@ -40,7 +40,8 @@ class TSSCS_WUSU(nn.Module):
         super(TSSCS_WUSU, self).__init__()
         self.inchannel = inchannel
         self.channel_first = channel_first
-        self.GrootV_S1 = MTGrootV3DLayer(channels=768)
+        # self.GrootV_S1 = MTGrootV3DLayer(channels=768)
+        self.GrootV_S1 = MTGrootV3DLayer(channels=640)
     def forward(self, x, y, z):
         B, C, H, W = x.size()
         ct_tensor_42 = torch.empty(B, C, H, 3 * W).cuda()
@@ -98,7 +99,9 @@ class GSTMSCD_WUSU_Random(nn.Module):
         self.lightweight = lightweight
         self.M = M
         self.Lambda = Lambda
-        self.backbone = MT_GOST_Mamba(depths=[2, 2, 13, 2])
+        # lxg: tiny参数为channels=80, depths=[2, 2, 9, 2]
+        # lxg: small参数为channels=96, depths=[2, 2, 13, 2]
+        self.backbone = MT_GOST_Mamba(channels=80, depths=[2, 2, 9, 2])
 
         if backbone == "resnet18" or backbone == "resnet34" or backbone == "GOST-Mamba":
             self.channel_nums = [80, 160, 320, 640, 640]
@@ -135,9 +138,9 @@ class GSTMSCD_WUSU_Random(nn.Module):
         self.classifierCD = nn.Sequential(nn.Conv2d(256, 64, kernel_size=1), nn.BatchNorm2d(64), nn.ReLU(), nn.Dropout(),
                                           nn.Conv2d(64, 1, kernel_size=1))
         updated_weights = {}
-        pretrained_weights = torch.load('/media/lenovo/课题研究/博士小论文数据/长时序变化检测/Long-term-SCD/CMSCD_lxg/grootv_cls_tiny.pth')
+        pretrained_weights = torch.load('./GSTM-SCD_Pretraining-weights/grootv_cls_tiny.pth')
         new_dict = pretrained_weights['model']
-        print(pretrained_weights)
+        # print(pretrained_weights)
         for key, value in new_dict.items():
             if key.startswith(('patch_embed.', 'levels.')):
                 new_key = key
@@ -193,7 +196,7 @@ class GSTMSCD_WUSU_Random(nn.Module):
         z_f = zf_sm1 + zf_sm2
         return x_f, y_f, z_f
 
-    def forward(self, x1, x2, x3):
+    def forward(self, x1, x2, x3, pair):
         b, c, h, w = x1.shape
         xy_in = torch.empty(b, c, h, 3 * w).cuda()
         xy_in[:, :, :, 0:w] = x1
@@ -227,7 +230,7 @@ class GSTMSCD_WUSU_Random(nn.Module):
         # CDDecoder
         # LXG:添加随机数
         feature = [feature1, feature2, feature3]
-        pair = sorted(random.sample(range(3), 2))
+        # pair = sorted(random.sample(range(3), 2))
         feature_diff = []
         for i in range(len(feature1)):
             # feature_diff.append(self.CFEM[i](feature1[i], feature3[i]))
@@ -244,8 +247,8 @@ class GSTMSCD_WUSU_Random(nn.Module):
         seg2 = self.softmax(seg2)
         seg3 = self.softmax(seg3)
         change13 = torch.sigmoid(change13)
-
-        return [seg1, seg2, seg3], change13.squeeze(1), pair
+        return seg1, seg2, seg3, change13.squeeze(1)
+        # return [seg1, seg2, seg3], change13.squeeze(1), pair
 
 
 #WUSU最优模型
@@ -295,30 +298,30 @@ class GSTMSCD_WUSU(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.classifierCD = nn.Sequential(nn.Conv2d(256, 64, kernel_size=1), nn.BatchNorm2d(64), nn.ReLU(), nn.Dropout(),
                                           nn.Conv2d(64, 1, kernel_size=1))
-        # updated_weights = {}
-        # pretrained_weights = torch.load('/mnt/mzh2/GSTM-SCD-main/pretrain_path/grootv_cls_small.pth')
-        # new_dict = pretrained_weights['model']
-        # # 防止权重不匹配
-        # for key, value in new_dict.items():
-        #     if key.startswith(('patch_embed.', 'levels.')):
-        #         if key == 'patch_embed.conv1.weight':
-        #             # 检查当前模型的 conv1.weight 形状
-        #             current_conv1_weight = self.backbone.state_dict()[key]
-        #             # 创建一个新的权重，形状与当前模型一致
-        #             new_conv1_weight = torch.zeros_like(current_conv1_weight)
-        #             # 将预训练权重的前3通道复制到新权重的前3通道
-        #             new_conv1_weight[:, :3, :, :] = value
-        #             # 将新权重添加到 updated_weights
-        #             updated_weights[key] = new_conv1_weight
-        #         else:
-        #             if key in self.backbone.state_dict():
-        #                 updated_weights[key] = value
-        #     else:
-        #         if key in self.backbone.state_dict():
-        #             updated_weights[key] = value
-        # self.backbone.load_state_dict(updated_weights, strict=True)
-        # after_weight = self.backbone.state_dict()
-        # print('Successfully loaded pre-training weights!')
+        updated_weights = {}
+        pretrained_weights = torch.load('/media/think/data/ljh/GSTM_main/GSTM-SCD_Pretraining-weights/grootv_cls_small.pth')
+        new_dict = pretrained_weights['model']
+        # 防止权重不匹配
+        for key, value in new_dict.items():
+            if key.startswith(('patch_embed.', 'levels.')):
+                if key == 'patch_embed.conv1.weight':
+                    # 检查当前模型的 conv1.weight 形状
+                    current_conv1_weight = self.backbone.state_dict()[key]
+                    # 创建一个新的权重，形状与当前模型一致
+                    new_conv1_weight = torch.zeros_like(current_conv1_weight)
+                    # 将预训练权重的前3通道复制到新权重的前3通道
+                    new_conv1_weight[:, :3, :, :] = value
+                    # 将新权重添加到 updated_weights
+                    updated_weights[key] = new_conv1_weight
+                else:
+                    if key in self.backbone.state_dict():
+                        updated_weights[key] = value
+            else:
+                if key in self.backbone.state_dict():
+                    updated_weights[key] = value
+        self.backbone.load_state_dict(updated_weights, strict=True)
+        after_weight = self.backbone.state_dict()
+        print('Successfully loaded pre-training weights!')
         for param in self.backbone.parameters():
             param.requires_grad = True
         initialize_weights(self.Seg_Decoder1, self.Seg_Decoder2, self.Seg_Decoder3, self.CD_Decoder,
@@ -348,7 +351,7 @@ class GSTMSCD_WUSU(nn.Module):
         return x_f, y_f, z_f
 
 
-    def forward(self, x1, x2, x3):
+    def forward(self, x1, x2, x3, pair):
         b, c, h, w = x1.shape
         xy_in = torch.empty(b, c, h, 3 * w).cuda()
         xy_in[:, :, :, 0:w] = x1
@@ -380,7 +383,7 @@ class GSTMSCD_WUSU(nn.Module):
         out_2 = self.Seg_Decoder2(feature2)
         out_3 = self.Seg_Decoder3(feature3)
         # CDDecoder
-        pair = [0, 2]
+        # pair = [0, 2]
         features = [feature1, feature2, feature3]
         feature_diff = []
         for i in range(len(feature1)):
