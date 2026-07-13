@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
+from models.dend_structure_routed_conv_v1 import DendStructureRoutedConv2d
 from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22 import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
@@ -128,11 +129,16 @@ class DendriticScaleAdapter(nn.Module):
         dend_soma_type: str = "q_if",
         dend_soma_cfg: Optional[dict] = None,
         Down_K: bool = False,
+        dend_spatial_conv_type: str = "fadc",
+        scale_index: Optional[int] = None,
     ):
         super().__init__()
         self.channels = int(channels)
         self.use_dendritic = bool(use_dendritic)
         self.dend_soma_type = _normalize_dend_soma_type(dend_soma_type)
+        self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
+        if self.dend_spatial_conv_type not in ("fadc", "structure_routed_v1"):
+            raise ValueError("dend_spatial_conv_type must be one of: fadc, structure_routed_v1")
         if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
             raise ValueError("dend_soma_cfg must be a dict or None")
         self.dend_soma_cfg = dict(dend_soma_cfg or {})
@@ -161,7 +167,12 @@ class DendriticScaleAdapter(nn.Module):
         if fs_cfg is not None:
             default_fs_cfg.update(fs_cfg)
 
-        self.adapter = DendFADCConv2d(
+        adapter_cls = (
+            DendFADCConv2d
+            if self.dend_spatial_conv_type == "fadc"
+            else DendStructureRoutedConv2d
+        )
+        adapter_kwargs = dict(
             in_channels=self.channels,
             out_channels=self.channels,
             kernel_size=kernel_size,
@@ -177,8 +188,11 @@ class DendriticScaleAdapter(nn.Module):
             fs_cfg=default_fs_cfg,
             calculate_next_k=True,
             SN_CLS=True,
-            Down_K=Down_K
+            Down_K=Down_K,
         )
+        if adapter_cls is DendStructureRoutedConv2d:
+            adapter_kwargs["scale_index"] = scale_index
+        self.adapter = adapter_cls(**adapter_kwargs)
 
         self.post_norm = _make_norm2d(self.channels, norm=norm, num_groups=norm_groups)
         # self.act = nn.GELU()
@@ -245,8 +259,7 @@ class FDPCEncoder(nn.Module):
         pdca_dend_prior_use_offset_gate=True,
         pdca_dend_prior_center_point=True,
         pdca_dend_prior_clip=2.0,
-
-
+        dend_spatial_conv_type: str = "fadc",
     ):
         super().__init__()
 
@@ -296,6 +309,8 @@ class FDPCEncoder(nn.Module):
                     dend_soma_type=dend_soma_type,
                     dend_soma_cfg=dend_soma_cfg,
                     Down_K=Down_K[s],
+                    dend_spatial_conv_type=dend_spatial_conv_type,
+                    scale_index=s,
                 )
             )
 

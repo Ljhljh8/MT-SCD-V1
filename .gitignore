@@ -35,13 +35,15 @@ __pycache__/
 .env
 .venv/
 venv/
+.agents/
+.gitnexus/
+.pytest_cache/
 
 # =========================
 # Data / logs / outputs
 # =========================
 data/
 dataset/
-datasets/
 outputs/
 output/
 runs/

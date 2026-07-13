@@ -362,7 +362,15 @@ def build_model(args, RS, device):
     if args.pretrain_from:
         incompatible = load_model_weights(model, args.pretrain_from, strict=False)
         if is_main_process(args):
-            print("Loaded non-strict pretrain weights from %s: %s" % (args.pretrain_from, incompatible), flush=True)
+            print(
+                "Loaded non-strict pretrain weights from %s: missing keys=%r, unexpected keys=%r"
+                % (
+                    args.pretrain_from,
+                    list(incompatible.missing_keys),
+                    list(incompatible.unexpected_keys),
+                ),
+                flush=True,
+            )
 
     model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

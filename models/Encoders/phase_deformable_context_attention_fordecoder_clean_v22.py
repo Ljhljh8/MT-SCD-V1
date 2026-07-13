@@ -16,8 +16,6 @@ Core idea:
     where raw dendritic difference could be rewarded as positive evidence.
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch

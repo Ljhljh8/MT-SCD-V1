@@ -103,7 +103,8 @@ class GSTMSCD_WUSU(nn.Module):
                     ),
                     kernel_decompose="both",
                     norm="gn",
-                    dend_residual_init=0.0,
+                    dend_residual_init=0.01,
+                    dend_spatial_conv_type="structure_routed_v1",
                     relation_mode=relation_mode,
                     pdca_cfg=dict(
                         num_heads=4,
