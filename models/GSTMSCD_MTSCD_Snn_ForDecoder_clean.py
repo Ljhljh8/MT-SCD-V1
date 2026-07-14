@@ -39,6 +39,10 @@ class GSTMSCD_WUSU(nn.Module):
         pdca_dend_prior_use_offset_gate=True,
         pdca_dend_prior_center_point=True,
         pdca_dend_prior_clip=2.0,
+
+        dend_spatial_conv_type="fadc",
+        routeconv_ablation_mode="full",
+        dend_residual_init=0.0,
     ):
         super().__init__()
         self.backbone_name = backbone
@@ -47,6 +51,15 @@ class GSTMSCD_WUSU(nn.Module):
         self.use_pdca_guided_pair_decoder = bool(use_pdca_guided_pair_decoder)
         self.detach_pdca_guidance = bool(detach_pdca_guidance)
         self.use_pdca_guidance = bool(use_pdca_guidance)
+
+        self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
+        self.routeconv_ablation_mode = str(routeconv_ablation_mode).lower()
+        self.dend_residual_init = float(dend_residual_init)
+        if self.dend_spatial_conv_type not in ("fadc", "structure_routed_v1"): raise ValueError(
+            "unsupported dend_spatial_conv_type")
+        if (
+                self.routeconv_ablation_mode != "full" and self.dend_spatial_conv_type != "structure_routed_v1"): raise ValueError(
+            "RouteConv ablation selected while RouteConv is disabled")
 
         if (
             self.use_pdca_guided_pair_decoder
@@ -103,8 +116,12 @@ class GSTMSCD_WUSU(nn.Module):
                     ),
                     kernel_decompose="both",
                     norm="gn",
-                    dend_residual_init=0.01,
-                    dend_spatial_conv_type="structure_routed_v1",
+                    # dend_residual_init=0.01,
+                    # dend_spatial_conv_type="structure_routed_v1",
+                    dend_residual_init=self.dend_residual_init,
+                    dend_spatial_conv_type=self.dend_spatial_conv_type,
+                    routeconv_ablation_mode=self.routeconv_ablation_mode,
+
                     relation_mode=relation_mode,
                     pdca_cfg=dict(
                         num_heads=4,

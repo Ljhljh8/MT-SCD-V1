@@ -27,7 +27,7 @@ from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
 PHASE_NAMES = ("t1", "t2", "t3")
 PAIR_NAMES = (("t1", "t2"), ("t2", "t3"), ("t1", "t3"))
 PAIR_KEYS = ("t1_to_t2", "t2_to_t3", "t1_to_t3")
-
+ 
 
 class DendBlock(nn.Module):
     """Input: [B, Cin, H, W] -> Output: [B, Cout, H, W].

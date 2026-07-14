@@ -111,6 +111,12 @@ def build_parser():
     parser.add_argument("--pair-bcd-lambda-13", type=float, default=1.0)
     parser.add_argument("--pair-bcd-dice-weight", type=float, default=1.0)
 
+    parser.add_argument("--dend-spatial-conv-type", choices=["fadc", "structure_routed_v1"], default="fadc", )
+    parser.add_argument("--routeconv-ablation-mode",
+                        choices=["full", "uniform_route", "global_route", "no_axis_descriptor",
+                                 "isotropic_direction_pool", ], default="full", )
+    parser.add_argument("--dend-residual-init", type=float, default=0.0)
+
     parser.add_argument("--opt", default="adamp")
     parser.add_argument("--opt-eps", default=None, type=float)
     parser.add_argument("--opt-betas", default=None, type=float, nargs="+", action=FloatTupleAction)
@@ -358,6 +364,10 @@ def build_model(args, RS, device):
         pdca_dend_prior_center_point=args.pdca_dend_prior_center_point,
         pdca_dend_prior_clip=args.pdca_dend_prior_clip,
 
+        dend_spatial_conv_type=args.dend_spatial_conv_type,
+        routeconv_ablation_mode=args.routeconv_ablation_mode,
+        dend_residual_init=args.dend_residual_init,
+
     )
     if args.pretrain_from:
         incompatible = load_model_weights(model, args.pretrain_from, strict=False)
@@ -562,7 +572,7 @@ def compute_losses(out1, out2, out3, change_logits_dict, masks, criteria, args):
         "t2": mask2 - 1,
         "t3": mask3 - 1,
     }
-    pair_targets = make_pairwise_change_targets(sem_targets, ignore_index=-1)
+    pair_targets = make_pairwise_change_targets(sem_targets, ignore_index=99)
 
     loss_seg = (
         criteria["seg"](out1.float(), sem_targets["t1"])

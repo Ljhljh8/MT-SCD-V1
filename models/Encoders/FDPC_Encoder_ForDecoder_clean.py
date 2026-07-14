@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
-from models.dend_structure_routed_conv_v1 import DendStructureRoutedConv2d
+from models.dend_structure_routed_conv_v1_ablation import DendStructureRoutedConv2d
 from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22 import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
@@ -131,12 +131,21 @@ class DendriticScaleAdapter(nn.Module):
         Down_K: bool = False,
         dend_spatial_conv_type: str = "fadc",
         scale_index: Optional[int] = None,
+
+        routeconv_ablation_mode: str = "full",
     ):
         super().__init__()
         self.channels = int(channels)
         self.use_dendritic = bool(use_dendritic)
         self.dend_soma_type = _normalize_dend_soma_type(dend_soma_type)
         self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
+
+        self.routeconv_ablation_mode = str(routeconv_ablation_mode).lower()
+        if (
+                self.dend_spatial_conv_type != "structure_routed_v1" and self.routeconv_ablation_mode != "full"): raise ValueError(
+            "routeconv_ablation_mode requires " "dend_spatial_conv_type='structure_routed_v1'")
+
+
         if self.dend_spatial_conv_type not in ("fadc", "structure_routed_v1"):
             raise ValueError("dend_spatial_conv_type must be one of: fadc, structure_routed_v1")
         if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
@@ -172,6 +181,8 @@ class DendriticScaleAdapter(nn.Module):
             if self.dend_spatial_conv_type == "fadc"
             else DendStructureRoutedConv2d
         )
+
+
         adapter_kwargs = dict(
             in_channels=self.channels,
             out_channels=self.channels,
@@ -192,6 +203,8 @@ class DendriticScaleAdapter(nn.Module):
         )
         if adapter_cls is DendStructureRoutedConv2d:
             adapter_kwargs["scale_index"] = scale_index
+            adapter_kwargs["ablation_mode"] = self.routeconv_ablation_mode
+
         self.adapter = adapter_cls(**adapter_kwargs)
 
         self.post_norm = _make_norm2d(self.channels, norm=norm, num_groups=norm_groups)
@@ -260,6 +273,7 @@ class FDPCEncoder(nn.Module):
         pdca_dend_prior_center_point=True,
         pdca_dend_prior_clip=2.0,
         dend_spatial_conv_type: str = "fadc",
+        routeconv_ablation_mode: str = "full",
     ):
         super().__init__()
 
@@ -311,6 +325,7 @@ class FDPCEncoder(nn.Module):
                     Down_K=Down_K[s],
                     dend_spatial_conv_type=dend_spatial_conv_type,
                     scale_index=s,
+                    routeconv_ablation_mode=routeconv_ablation_mode,
                 )
             )
 
