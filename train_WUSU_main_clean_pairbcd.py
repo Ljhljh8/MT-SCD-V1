@@ -111,10 +111,15 @@ def build_parser():
     parser.add_argument("--pair-bcd-lambda-13", type=float, default=1.0)
     parser.add_argument("--pair-bcd-dice-weight", type=float, default=1.0)
 
-    parser.add_argument("--dend-spatial-conv-type", choices=["fadc", "structure_routed_v1"], default="fadc", )
+    parser.add_argument("--dend-spatial-conv-type",
+                        choices=["fadc", "structure_routed_v1", "structure_routed_v2"],
+                        default="fadc", )
     parser.add_argument("--routeconv-ablation-mode",
                         choices=["full", "uniform_route", "global_route", "no_axis_descriptor",
                                  "isotropic_direction_pool", ], default="full", )
+    parser.add_argument("--routeconv-v2-mode",
+                        choices=["v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"],
+                        default="v2_6", )
     parser.add_argument("--dend-residual-init", type=float, default=0.0)
 
     parser.add_argument("--opt", default="adamp")
@@ -165,6 +170,16 @@ def build_parser():
 def validate_args(args):
     if not args.use_pdca_guided_pair_decoder:
         raise ValueError("clean pair_bcd training requires --use-pdca-guided-pair-decoder")
+    if (
+        args.routeconv_ablation_mode != "full"
+        and args.dend_spatial_conv_type != "structure_routed_v1"
+    ):
+        raise ValueError("--routeconv-ablation-mode requires --dend-spatial-conv-type structure_routed_v1")
+    if (
+        args.routeconv_v2_mode != "v2_6"
+        and args.dend_spatial_conv_type != "structure_routed_v2"
+    ):
+        raise ValueError("non-default --routeconv-v2-mode requires --dend-spatial-conv-type structure_routed_v2")
     if args.batch_size < 1 or args.val_batch_size < 1:
         raise ValueError("batch sizes must be >= 1")
     if args.accum_steps < 1 or args.reference_accum_steps < 1:
@@ -366,6 +381,7 @@ def build_model(args, RS, device):
 
         dend_spatial_conv_type=args.dend_spatial_conv_type,
         routeconv_ablation_mode=args.routeconv_ablation_mode,
+        routeconv_v2_mode=args.routeconv_v2_mode,
         dend_residual_init=args.dend_residual_init,
 
     )

@@ -23,6 +23,7 @@ import torch.nn as nn
 
 from models.dendsn_lifFADC_Snn_v2 import DendFADCConv2d
 from models.dend_structure_routed_conv_v1_ablation import DendStructureRoutedConv2d
+from models.dend_structure_routed_conv_v2 import DendStructureRoutedConv2dV2
 from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22 import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
@@ -133,6 +134,7 @@ class DendriticScaleAdapter(nn.Module):
         scale_index: Optional[int] = None,
 
         routeconv_ablation_mode: str = "full",
+        routeconv_v2_mode: str = "v2_6",
     ):
         super().__init__()
         self.channels = int(channels)
@@ -141,13 +143,34 @@ class DendriticScaleAdapter(nn.Module):
         self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
 
         self.routeconv_ablation_mode = str(routeconv_ablation_mode).lower()
+        self.routeconv_v2_mode = str(routeconv_v2_mode).lower()
         if (
-                self.dend_spatial_conv_type != "structure_routed_v1" and self.routeconv_ablation_mode != "full"): raise ValueError(
-            "routeconv_ablation_mode requires " "dend_spatial_conv_type='structure_routed_v1'")
-
-
-        if self.dend_spatial_conv_type not in ("fadc", "structure_routed_v1"):
-            raise ValueError("dend_spatial_conv_type must be one of: fadc, structure_routed_v1")
+            self.dend_spatial_conv_type != "structure_routed_v1"
+            and self.routeconv_ablation_mode != "full"
+        ):
+            raise ValueError(
+                "routeconv_ablation_mode requires "
+                "dend_spatial_conv_type='structure_routed_v1'"
+            )
+        if (
+            self.dend_spatial_conv_type != "structure_routed_v2"
+            and self.routeconv_v2_mode != "v2_6"
+        ):
+            raise ValueError(
+                "routeconv_v2_mode requires "
+                "dend_spatial_conv_type='structure_routed_v2'"
+            )
+        if self.routeconv_v2_mode not in (
+            "v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"
+        ):
+            raise ValueError("routeconv_v2_mode must be one of: v2_1, v2_2, v2_3, v2_4, v2_5, v2_6")
+        if self.dend_spatial_conv_type not in (
+            "fadc", "structure_routed_v1", "structure_routed_v2"
+        ):
+            raise ValueError(
+                "dend_spatial_conv_type must be one of: "
+                "fadc, structure_routed_v1, structure_routed_v2"
+            )
         if dend_soma_cfg is not None and not isinstance(dend_soma_cfg, dict):
             raise ValueError("dend_soma_cfg must be a dict or None")
         self.dend_soma_cfg = dict(dend_soma_cfg or {})
@@ -176,12 +199,11 @@ class DendriticScaleAdapter(nn.Module):
         if fs_cfg is not None:
             default_fs_cfg.update(fs_cfg)
 
-        adapter_cls = (
-            DendFADCConv2d
-            if self.dend_spatial_conv_type == "fadc"
-            else DendStructureRoutedConv2d
-        )
-
+        adapter_cls = {
+            "fadc": DendFADCConv2d,
+            "structure_routed_v1": DendStructureRoutedConv2d,
+            "structure_routed_v2": DendStructureRoutedConv2dV2,
+        }[self.dend_spatial_conv_type]
 
         adapter_kwargs = dict(
             in_channels=self.channels,
@@ -204,6 +226,9 @@ class DendriticScaleAdapter(nn.Module):
         if adapter_cls is DendStructureRoutedConv2d:
             adapter_kwargs["scale_index"] = scale_index
             adapter_kwargs["ablation_mode"] = self.routeconv_ablation_mode
+        elif adapter_cls is DendStructureRoutedConv2dV2:
+            adapter_kwargs["scale_index"] = scale_index
+            adapter_kwargs["v2_mode"] = self.routeconv_v2_mode
 
         self.adapter = adapter_cls(**adapter_kwargs)
 
@@ -274,6 +299,7 @@ class FDPCEncoder(nn.Module):
         pdca_dend_prior_clip=2.0,
         dend_spatial_conv_type: str = "fadc",
         routeconv_ablation_mode: str = "full",
+        routeconv_v2_mode: str = "v2_6",
     ):
         super().__init__()
 
@@ -326,6 +352,7 @@ class FDPCEncoder(nn.Module):
                     dend_spatial_conv_type=dend_spatial_conv_type,
                     scale_index=s,
                     routeconv_ablation_mode=routeconv_ablation_mode,
+                    routeconv_v2_mode=routeconv_v2_mode,
                 )
             )
 

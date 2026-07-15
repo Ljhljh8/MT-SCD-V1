@@ -87,7 +87,7 @@ class AnalyticStructureDescriptor(nn.Module):
             x = x.float()
             channels = x.shape[1]
             mean_c = self._average(x)
-            second_c = self._average(x.square())
+            second_c = self._average(x.square())  # 平方
             mu = mean_c.mean(dim=1, keepdim=True)
             second = second_c.mean(dim=1, keepdim=True)
             variance = (second_c - mean_c.square()).clamp_min(0.0).mean(dim=1, keepdim=True)

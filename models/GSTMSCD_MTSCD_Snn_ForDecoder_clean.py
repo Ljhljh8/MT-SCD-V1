@@ -43,6 +43,7 @@ class GSTMSCD_WUSU(nn.Module):
         dend_spatial_conv_type="fadc",
         routeconv_ablation_mode="full",
         dend_residual_init=0.0,
+        routeconv_v2_mode="v2_6",
     ):
         super().__init__()
         self.backbone_name = backbone
@@ -54,12 +55,26 @@ class GSTMSCD_WUSU(nn.Module):
 
         self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
         self.routeconv_ablation_mode = str(routeconv_ablation_mode).lower()
+        self.routeconv_v2_mode = str(routeconv_v2_mode).lower()
         self.dend_residual_init = float(dend_residual_init)
-        if self.dend_spatial_conv_type not in ("fadc", "structure_routed_v1"): raise ValueError(
-            "unsupported dend_spatial_conv_type")
+        if self.dend_spatial_conv_type not in (
+            "fadc", "structure_routed_v1", "structure_routed_v2"
+        ):
+            raise ValueError("unsupported dend_spatial_conv_type")
         if (
-                self.routeconv_ablation_mode != "full" and self.dend_spatial_conv_type != "structure_routed_v1"): raise ValueError(
-            "RouteConv ablation selected while RouteConv is disabled")
+            self.routeconv_ablation_mode != "full"
+            and self.dend_spatial_conv_type != "structure_routed_v1"
+        ):
+            raise ValueError("V1 RouteConv ablation selected while V1 is disabled")
+        if self.routeconv_v2_mode not in (
+            "v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"
+        ):
+            raise ValueError("unsupported routeconv_v2_mode")
+        if (
+            self.routeconv_v2_mode != "v2_6"
+            and self.dend_spatial_conv_type != "structure_routed_v2"
+        ):
+            raise ValueError("V2 RouteConv mode selected while V2 is disabled")
 
         if (
             self.use_pdca_guided_pair_decoder
@@ -121,6 +136,7 @@ class GSTMSCD_WUSU(nn.Module):
                     dend_residual_init=self.dend_residual_init,
                     dend_spatial_conv_type=self.dend_spatial_conv_type,
                     routeconv_ablation_mode=self.routeconv_ablation_mode,
+                    routeconv_v2_mode=self.routeconv_v2_mode,
 
                     relation_mode=relation_mode,
                     pdca_cfg=dict(
