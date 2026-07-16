@@ -66,6 +66,38 @@ def build_parser():
     parser.add_argument("--amp", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--change-threshold", type=float, default=0.5)
     parser.add_argument("--backbone", default="sdtv2")
+    parser.add_argument(
+        "--dend-spatial-conv-type",
+        choices=(
+            "fadc",
+            "structure_routed_v1",
+            "structure_routed_v2",
+            "structure_routed_v3",
+        ),
+        default="fadc",
+    )
+    parser.add_argument(
+        "--routeconv-ablation-mode",
+        choices=(
+            "full",
+            "uniform_route",
+            "global_route",
+            "no_axis_descriptor",
+            "isotropic_direction_pool",
+        ),
+        default="full",
+    )
+    parser.add_argument(
+        "--routeconv-v2-mode",
+        choices=("v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"),
+        default="v2_6",
+    )
+    parser.add_argument(
+        "--routeconv-v3-mode",
+        choices=("v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"),
+        default="v3_6",
+    )
+    parser.add_argument("--dend-residual-init", type=float, default=0.0)
 
     parser.add_argument(
         "--pdca-dend-prior-mode",
@@ -135,6 +167,11 @@ def build_model(args, device):
         pdca_dend_prior_clip=args.pdca_dend_prior_clip,
         pdca_dend_prior_affect_null=args.pdca_dend_prior_affect_null,
         pdca_dend_prior_stats=args.pdca_dend_prior_stats,
+        dend_spatial_conv_type=args.dend_spatial_conv_type,
+        routeconv_ablation_mode=args.routeconv_ablation_mode,
+        routeconv_v2_mode=args.routeconv_v2_mode,
+        routeconv_v3_mode=args.routeconv_v3_mode,
+        dend_residual_init=args.dend_residual_init,
     )
     return model.to(device)
 

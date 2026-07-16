@@ -112,7 +112,8 @@ def build_parser():
     parser.add_argument("--pair-bcd-dice-weight", type=float, default=1.0)
 
     parser.add_argument("--dend-spatial-conv-type",
-                        choices=["fadc", "structure_routed_v1", "structure_routed_v2"],
+                        choices=["fadc", "structure_routed_v1", "structure_routed_v2",
+                                 "structure_routed_v3"],
                         default="fadc", )
     parser.add_argument("--routeconv-ablation-mode",
                         choices=["full", "uniform_route", "global_route", "no_axis_descriptor",
@@ -120,6 +121,9 @@ def build_parser():
     parser.add_argument("--routeconv-v2-mode",
                         choices=["v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"],
                         default="v2_6", )
+    parser.add_argument("--routeconv-v3-mode",
+                        choices=["v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"],
+                        default="v3_6", )
     parser.add_argument("--dend-residual-init", type=float, default=0.0)
 
     parser.add_argument("--opt", default="adamp")
@@ -180,6 +184,14 @@ def validate_args(args):
         and args.dend_spatial_conv_type != "structure_routed_v2"
     ):
         raise ValueError("non-default --routeconv-v2-mode requires --dend-spatial-conv-type structure_routed_v2")
+    if (
+        args.routeconv_v3_mode != "v3_6"
+        and args.dend_spatial_conv_type != "structure_routed_v3"
+    ):
+        raise ValueError(
+            "non-default --routeconv-v3-mode requires "
+            "--dend-spatial-conv-type structure_routed_v3"
+        )
     if args.batch_size < 1 or args.val_batch_size < 1:
         raise ValueError("batch sizes must be >= 1")
     if args.accum_steps < 1 or args.reference_accum_steps < 1:
@@ -382,6 +394,7 @@ def build_model(args, RS, device):
         dend_spatial_conv_type=args.dend_spatial_conv_type,
         routeconv_ablation_mode=args.routeconv_ablation_mode,
         routeconv_v2_mode=args.routeconv_v2_mode,
+        routeconv_v3_mode=args.routeconv_v3_mode,
         dend_residual_init=args.dend_residual_init,
 
     )

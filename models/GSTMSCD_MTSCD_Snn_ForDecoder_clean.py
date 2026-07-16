@@ -44,6 +44,7 @@ class GSTMSCD_WUSU(nn.Module):
         routeconv_ablation_mode="full",
         dend_residual_init=0.0,
         routeconv_v2_mode="v2_6",
+        routeconv_v3_mode="v3_6",
     ):
         super().__init__()
         self.backbone_name = backbone
@@ -56,9 +57,13 @@ class GSTMSCD_WUSU(nn.Module):
         self.dend_spatial_conv_type = str(dend_spatial_conv_type).lower()
         self.routeconv_ablation_mode = str(routeconv_ablation_mode).lower()
         self.routeconv_v2_mode = str(routeconv_v2_mode).lower()
+        self.routeconv_v3_mode = str(routeconv_v3_mode).lower()
         self.dend_residual_init = float(dend_residual_init)
         if self.dend_spatial_conv_type not in (
-            "fadc", "structure_routed_v1", "structure_routed_v2"
+            "fadc",
+            "structure_routed_v1",
+            "structure_routed_v2",
+            "structure_routed_v3",
         ):
             raise ValueError("unsupported dend_spatial_conv_type")
         if (
@@ -75,6 +80,15 @@ class GSTMSCD_WUSU(nn.Module):
             and self.dend_spatial_conv_type != "structure_routed_v2"
         ):
             raise ValueError("V2 RouteConv mode selected while V2 is disabled")
+        if self.routeconv_v3_mode not in (
+            "v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"
+        ):
+            raise ValueError("unsupported routeconv_v3_mode")
+        if (
+            self.routeconv_v3_mode != "v3_6"
+            and self.dend_spatial_conv_type != "structure_routed_v3"
+        ):
+            raise ValueError("V3 RouteConv mode selected while V3 is disabled")
 
         if (
             self.use_pdca_guided_pair_decoder
@@ -137,6 +151,7 @@ class GSTMSCD_WUSU(nn.Module):
                     dend_spatial_conv_type=self.dend_spatial_conv_type,
                     routeconv_ablation_mode=self.routeconv_ablation_mode,
                     routeconv_v2_mode=self.routeconv_v2_mode,
+                    routeconv_v3_mode=self.routeconv_v3_mode,
 
                     relation_mode=relation_mode,
                     pdca_cfg=dict(

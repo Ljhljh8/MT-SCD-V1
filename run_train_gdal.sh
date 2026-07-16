@@ -146,13 +146,15 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=25710 tra
   --sched poly --sched-on-updates \
   --relation-mode pdca \
   --use-pdca-guided-pair-decoder \
-  --output_dir ./logs/clean_train_routconvVv2_6/ \
+  --output_dir ./logs/clean_train_routconvVv_31/ \
   --pretrain_from '' \
   --val-mode all_pairs \
-  --dend-spatial-conv-type structure_routed_v2 \
+  --dend-spatial-conv-type structure_routed_v3 \
   --routeconv-ablation-mode full \
   --routeconv-v2-mode v2_6 \
-  --dend-residual-init 0.01 \ 
+  --routeconv-v3-mode v3_1 \
+  --dend-residual-init 0.01 \
+
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=25710 train_WUSU_main_clean_pairbcd.py \
   --accum_steps 1 --epochs 1 \
@@ -161,12 +163,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=25710 tra
   --sched poly --sched-on-updates \
   --relation-mode pdca \
   --use-pdca-guided-pair-decoder \
-  --output_dir ./logs/clean_train_routconvV2_5/ \
+  --output_dir ./logs/clean_train_routconvVv_32/ \
   --pretrain_from '' \
   --val-mode all_pairs \
-  --dend-spatial-conv-type structure_routed_v2 \
+  --dend-spatial-conv-type structure_routed_v3 \
   --routeconv-ablation-mode full \
-  --routeconv-v2-mode v2_5 \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_2 \
   --dend-residual-init 0.01 \
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=25710 train_WUSU_main_clean_pairbcd.py \
@@ -176,10 +179,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=25710 tra
   --sched poly --sched-on-updates \
   --relation-mode pdca \
   --use-pdca-guided-pair-decoder \
-  --output_dir ./logs/clean_train_routconvV2_4/ \
+  --output_dir ./logs/clean_train_routconvVv_33/ \
   --pretrain_from '' \
   --val-mode all_pairs \
-  --dend-spatial-conv-type structure_routed_v2 \
+  --dend-spatial-conv-type structure_routed_v3 \
   --routeconv-ablation-mode full \
-  --routeconv-v2-mode v2_4 \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_3 \
   --dend-residual-init 0.01 \

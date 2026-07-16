@@ -122,10 +122,13 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 tra
   --sched poly --sched-on-updates \
   --relation-mode pdca \
   --use-pdca-guided-pair-decoder \
-  --output_dir ./logs/clean_train_routconvV1_isotropic_direction_pool/ \
+  --output_dir ./logs/clean_train_routconvVv_34/ \
   --pretrain_from '' \
-  --dend-spatial-conv-type structure_routed_v1 \
-  --routeconv-ablation-mode isotropic_direction_pool \
+  --val-mode all_pairs \
+  --dend-spatial-conv-type structure_routed_v3 \
+  --routeconv-ablation-mode full \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_4 \
   --dend-residual-init 0.01 \
 
 CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd.py \
@@ -135,9 +138,28 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 tra
   --sched poly --sched-on-updates \
   --relation-mode pdca \
   --use-pdca-guided-pair-decoder \
-  --output_dir ./logs/clean_train_routconvV1_no_axis_descriptor/ \
+  --output_dir ./logs/clean_train_routconvVv_35/ \
   --pretrain_from '' \
-  --dend-spatial-conv-type structure_routed_v1 \
-  --routeconv-ablation-mode no_axis_descriptor \
-  --dend-residual-init 0.01
+  --val-mode all_pairs \
+  --dend-spatial-conv-type structure_routed_v3 \
+  --routeconv-ablation-mode full \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_5 \
+  --dend-residual-init 0.01 \
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd.py \
+  --accum_steps 1 --epochs 100 \
+  --batch-size 1  --sync_bn \
+  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
+  --sched poly --sched-on-updates \
+  --relation-mode pdca \
+  --use-pdca-guided-pair-decoder \
+  --output_dir ./logs/clean_train_routconvVv_36/ \
+  --pretrain_from '' \
+  --val-mode all_pairs \
+  --dend-spatial-conv-type structure_routed_v3 \
+  --routeconv-ablation-mode full \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_6 \
+  --dend-residual-init 0.01 \
   
