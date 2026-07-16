@@ -609,7 +609,7 @@ def resolve_git_provenance(args):
 
 
 def build_model(args, RS, device):
-    from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean import GSTMSCD_WUSU as Net
+    from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean_V4 import GSTMSCD_WUSU as Net
 
     use_internal_pretrain = bool(args.pretrained)
     if use_internal_pretrain and not os.path.exists(internal_pretrain_path()):

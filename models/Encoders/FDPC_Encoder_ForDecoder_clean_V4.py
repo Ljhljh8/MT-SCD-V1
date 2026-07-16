@@ -32,7 +32,7 @@ from models.dend_structure_routed_conv_v4 import (
     V4_FREQUENCY_BANDS,
     V4_STRUCTURE_CHANNELS,
 )
-from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22 import PhaseDeformableContextAttention
+from models.Encoders.phase_deformable_context_attention_fordecoder_clean_v22_V4 import PhaseDeformableContextAttention
 from mmseg.Qtrick_architecture.clock_driven.neuron import MTSCDPRDNIIFNode, Q_IFNode
 from mmseg.Qtrick_architecture.clock_driven.surrogate import Quant, Quant4
 

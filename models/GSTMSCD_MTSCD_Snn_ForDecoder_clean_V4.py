@@ -5,7 +5,7 @@ from torch import nn
 
 from mmseg.models.backbones import Spiking_vit_MetaFormer as SDTV2Backbone
 from models.Decoders.Snn_Mtscd_Decoder_V4_DIRECTTRAIN_clean import MTSCDDecoderNet
-from models.Encoders.FDPC_Encoder_ForDecoder_clean import FDPCEncoder
+from models.Encoders.FDPC_Encoder_ForDecoder_clean_V4 import FDPCEncoder
 
 
 norm_cfg = dict(type="SyncBN", requires_grad=True)
