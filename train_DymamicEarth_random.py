@@ -3,12 +3,12 @@ import datasets.MultiSiamese_RS_ST_TL_DynamocEarth as RS
 # from models.proposed_MTGrootV3D import GSTMSCD_random as Net
 # from models.BiSRNet import BiSRNet_NMT as Net
 # from models.EGMSNet import EGMSNet_NMT as Net
-# from models.proposed_MTGrootV3D import MTGrootV3D_SV3_DynamicEarth_random_base as Net
+from models.GSTMSCD_MTSCD import GSTMSCD_Dynamic_random as Net
 # from models.TED import TED_NMT as Net
 # from models.HRSCD_str4 import HRSCD_str4_NMT as Net
 # from models.SSCDl import SSCDl_NMT as Net
 # from models.SCanNet import SCanNet_NMT as Net
-from models.HRSCD_str3 import HRSCD_str3_dymamic as Net
+# from models.HRSCD_str3 import HRSCD_str3_dymamic as Net
 from utils.palette import color_map
 from utils.metric import IOUandSek
 from utils.loss import ChangeSimilarity, DiceLoss

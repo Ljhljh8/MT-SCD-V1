@@ -124,7 +124,7 @@ STD_E = np.array([458.778723, 591.724693, 730.240061, 1325.141909])
 MEAN_F = np.array([176.202393, 241.355481, 277.609658, 657.072685])
 STD_F = np.array([438.080904, 561.792241, 699.111058, 1262.025594])
 
-root = '/media/lenovo/课题研究/博士小论文数据/语义变化检测数据集/DynamicEarthNet_4band/随机时相测试/'
+root = '/home/think/ljh_datasets/DynamicEarthNet/'
 
 colormap2label = np.zeros(256 ** 3)
 for i, cm in enumerate(ST_COLORMAP):

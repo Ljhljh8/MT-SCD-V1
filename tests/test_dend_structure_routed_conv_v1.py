@@ -55,7 +55,7 @@ class CleanStructureRoutedWiringTest(unittest.TestCase):
 
     def test_clean_model_and_train_entry_are_explicitly_wired(self):
         model_source = (
-            repo_root / "models" / "GSTMSCD_MTSCD_Snn_ForDecoder_clean.py"
+            repo_root / "models" / "GSTMSCD_MTSCD_Snn_ForDecoder_clean_V4.py"
         ).read_text(encoding="utf-8")
         train_source = (repo_root / "train_WUSU_main_clean_pairbcd.py").read_text(
             encoding="utf-8"

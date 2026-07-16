@@ -19,7 +19,7 @@ from spikingjelly.clock_driven import functional
 from torch.utils.data import DataLoader
 
 import datasets.MultiSiamese_RS_ST_TL as RS
-from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean import GSTMSCD_WUSU
+from models.GSTMSCD_MTSCD_Snn_ForDecoder_clean_V4 import GSTMSCD_WUSU
 from utils.metric import IOUandSek
 from utils.palette import color_map_WUSU13
 
