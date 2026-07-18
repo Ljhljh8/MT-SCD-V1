@@ -1,0 +1,199 @@
+diff --git a/train_WUSU_main_clean_pairbcd_V4.py b/train_WUSU_main_clean_pairbcd_V4.py
+index e03c906..995f642 100644
+--- a/train_WUSU_main_clean_pairbcd_V4.py
++++ b/train_WUSU_main_clean_pairbcd_V4.py
+@@ -42,6 +42,7 @@ except ModuleNotFoundError:
+ 
+ PAIR_NAMES = (("t1", "t2"), ("t2", "t3"), ("t1", "t3"))
+ PAIR_KEYS = ("t1_to_t2", "t2_to_t3", "t1_to_t3")
++EVALUATION_SCHEMA_VERSION = 2
+ 
+ MECHANISM_CONFIG_SCHEMA_VERSION = 1
+ 
+@@ -1075,6 +1076,36 @@ def _metric_dict(metric):
+     }
+ 
+ 
++def _assert_metric_dict_exact(reference, candidate, name):
++    if set(reference) != set(candidate):
++        raise RuntimeError(
++            "%s metric keys differ: reference=%r candidate=%r"
++            % (name, sorted(reference), sorted(candidate))
++        )
++    mismatches = {}
++    for metric_name in reference:
++        reference_value = float(reference[metric_name])
++        candidate_value = float(candidate[metric_name])
++        if not math.isfinite(reference_value):
++            raise FloatingPointError(
++                "%s reference metric %s is non-finite" % (name, metric_name)
++            )
++        if not math.isfinite(candidate_value):
++            raise FloatingPointError(
++                "%s candidate metric %s is non-finite" % (name, metric_name)
++            )
++        if reference_value != candidate_value:
++            mismatches[metric_name] = {
++                "reference": reference_value,
++                "candidate": candidate_value,
++            }
++    if mismatches:
++        raise RuntimeError(
++            "%s metrics differ: %s"
++            % (name, json.dumps(mismatches, ensure_ascii=False, sort_keys=True))
++        )
++
++
+ @torch.no_grad()
+ def validate_t1_t3(ctx, epoch):
+     args = ctx.args
+@@ -1146,12 +1177,18 @@ def validate_all_pairs(ctx, epoch):
+             change_logits_dict["t1_to_t3"].detach().float().squeeze(1),
+             _change13.detach().float(),
+         )
+-        valid_13 = (mask1 > 0) & (mask3 > 0)
+-        label_change_13 = (mask1 != mask3) & valid_13
+-        if valid_13.any():
+-            labels_t1_t3_consistent = labels_t1_t3_consistent and torch.equal(
+-                (mask_bn != 0)[valid_13],
+-                label_change_13[valid_13],
++        label_change_13 = mask1 != mask3
++        batch_labels_consistent = torch.equal(mask_bn != 0, label_change_13)
++        labels_t1_t3_consistent = (
++            labels_t1_t3_consistent and batch_labels_consistent
++        )
++        if not batch_labels_consistent:
++            mismatch_count = int(
++                torch.count_nonzero((mask_bn != 0) != label_change_13).item()
++            )
++            raise RuntimeError(
++                "mask_bn differs from (mask1 != mask3) on %d pixels"
++                % mismatch_count
+             )
+ 
+         preds = {
+@@ -1164,8 +1201,9 @@ def validate_all_pairs(ctx, epoch):
+         for pair_key, (phase_i, phase_j) in zip(PAIR_KEYS, PAIR_NAMES):
+             label_i = labels[phase_i]
+             label_j = labels[phase_j]
+-            valid = (label_i > 0) & (label_j > 0)
+-            gt_change = (label_i != label_j) & valid
++            # WUSU authoritative definition: every label transition is change.
++            # Ground truth must never suppress a model prediction.
++            gt_change = label_i != label_j
+             pred_change = (
+                 torch.sigmoid(change_logits_dict[pair_key].detach().float().cpu().squeeze(1)) > 0.5
+             )
+@@ -1179,11 +1217,6 @@ def validate_all_pairs(ctx, epoch):
+             pred_j[~pred_change] = 0
+             gt_i[~gt_change] = 0
+             gt_j[~gt_change] = 0
+-            pred_i[~valid] = 0
+-            pred_j[~valid] = 0
+-            gt_i[~valid] = 0
+-            gt_j[~valid] = 0
+-
+             metric_by_pair[pair_key].add_batch(pred_i.numpy(), gt_i.numpy())
+             metric_by_pair[pair_key].add_batch(pred_j.numpy(), gt_j.numpy())
+             pooled_metric.add_batch(pred_i.numpy(), gt_i.numpy())
+@@ -1202,6 +1235,7 @@ def validate_all_pairs(ctx, epoch):
+         for name in metric_names
+     }
+     stats = {
++        "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+         "per_pair": per_pair,
+         "macro": macro,
+         "pooled": _metric_dict(pooled_metric),
+@@ -1209,7 +1243,7 @@ def validate_all_pairs(ctx, epoch):
+             "change_logits_t1_to_t3_equal_change13": bool(
+                 logits_t1_t3_consistent
+             ),
+-            "label_change_t1_to_t3_equal_mask_bn_on_valid": bool(
++            "label_change_t1_to_t3_equal_mask_bn_full_image": bool(
+                 labels_t1_t3_consistent
+             ),
+         },
+@@ -1968,15 +2002,19 @@ def main(argv=None):
+         log_path = make_log_path(args) if is_main_process(args) else None
+         if args.eval_only:
+             val_stats = validate_t1_t3(ctx, ctx.start_epoch)
++            all_pairs_stats = validate_all_pairs(ctx, ctx.start_epoch)
++            _assert_metric_dict_exact(
++                val_stats,
++                all_pairs_stats["per_pair"]["t1_to_t3"],
++                "selected validation t1-to-t3",
++            )
+             payload = {
+                 "epoch": ctx.start_epoch,
++                "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+                 "selected_validation_t1_t3": val_stats,
+                 "best_score": float(ctx.best_metric),
+                 "best_epoch": int(ctx.best_epoch),
+-                "selected_validation_all_pairs": validate_all_pairs(
+-                    ctx,
+-                    ctx.start_epoch,
+-                ),
++                "selected_validation_all_pairs": all_pairs_stats,
+             }
+             if args.v4_mechanism_diagnostics:
+                 payload["v4_mechanism_diagnostics"] = (
+@@ -2008,8 +2046,14 @@ def main(argv=None):
+         if selected_loaded:
+             selected_t1_t3 = validate_t1_t3(ctx, ctx.best_epoch)
+             selected_all_pairs = validate_all_pairs(ctx, ctx.best_epoch)
++            _assert_metric_dict_exact(
++                selected_t1_t3,
++                selected_all_pairs["per_pair"]["t1_to_t3"],
++                "selected validation t1-to-t3",
++            )
+             if is_main_process(args):
+                 selected_payload = {
++                    "evaluation_schema_version": EVALUATION_SCHEMA_VERSION,
+                     "best_epoch": int(ctx.best_epoch),
+                     "best_score": float(ctx.best_metric),
+                     "selected_validation_t1_t3": selected_t1_t3,
+@@ -2029,4 +2073,4 @@ def main(argv=None):
+ 
+ 
+ if __name__ == "__main__":
+-    main()
+\ No newline at end of file
++    main()
+diff --git a/utils/metric.py b/utils/metric.py
+index af785e8..6281cd9 100644
+--- a/utils/metric.py
++++ b/utils/metric.py
+@@ -187,18 +187,21 @@ class IOUandSek:
+         score = 0.3 * miou + 0.7 * sek
+ 
+         pixel_sum = self.hist.sum()
+-        change_pred_sum = pixel_sum - self.hist.sum(1)[0].sum()
+-        change_label_sum = pixel_sum - self.hist.sum(0)[0].sum()
+-        change_ratio = change_label_sum / pixel_sum
++        # self.hist rows are ground truth; columns are predictions.
++        gt_change_sum = self.hist[1:, :].sum()
++        pred_change_sum = self.hist[:, 1:].sum()
++        change_ratio = gt_change_sum / pixel_sum if pixel_sum > 0 else 0.0
+         SC_TP = np.diag(hist[1:, 1:]).sum()
+-        SC_Precision = SC_TP / change_pred_sum
+-        if change_pred_sum == 0:
+-            SC_Precision = 0
+-        SC_Recall = SC_TP / change_label_sum
+-        if change_label_sum == 0:
+-            SC_Recall = 0
+-
+-        Fscd = stats.hmean([SC_Precision, SC_Recall])
++        SC_Precision = (
++            SC_TP / pred_change_sum if pred_change_sum > 0 else 0.0
++        )
++        SC_Recall = SC_TP / gt_change_sum if gt_change_sum > 0 else 0.0
++
++        Fscd = (
++            stats.hmean([SC_Precision, SC_Recall])
++            if SC_Precision > 0 and SC_Recall > 0
++            else 0.0
++        )
+ 
+         return change_ratio, score, miou, sek, Fscd, OA, SC_Precision, SC_Recall
+ 
+

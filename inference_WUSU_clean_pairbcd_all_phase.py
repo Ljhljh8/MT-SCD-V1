@@ -94,7 +94,16 @@ def build_parser():
     )
     parser.add_argument(
         "--routeconv-v3-mode",
-        choices=("v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"),
+        choices=(
+            "v3_1",
+            "v3_2",
+            "v3_3",
+            "v3_4",
+            "v3_5",
+            "v3_6",
+            "v3_7",
+            "v3_8",
+        ),
         default="v3_6",
     )
     parser.add_argument("--dend-residual-init", type=float, default=0.0)
@@ -179,6 +188,44 @@ def build_model(args, device):
 def load_checkpoint(model, checkpoint_path):
     """Load a model/model-state/raw-state checkpoint strictly."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    def load_checkpoint(model, checkpoint_path):
+        """Load a model/model-state/raw-state checkpoint strictly."""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        if isinstance(checkpoint, dict):
+            checkpoint_args = checkpoint.get("args")
+
+            if isinstance(checkpoint_args, dict):
+                checkpoint_mode = checkpoint_args.get("routeconv_v3_mode")
+                model_mode = getattr(model, "routeconv_v3_mode", None)
+
+                if (
+                        checkpoint_mode is not None
+                        and model_mode is not None
+                        and str(checkpoint_mode).lower() != str(model_mode).lower()
+                ):
+                    raise ValueError(
+                        "V3 mode mismatch: checkpoint was trained with "
+                        "routeconv_v3_mode=%r, but inference model uses %r"
+                        % (checkpoint_mode, model_mode)
+                    )
+
+        if isinstance(checkpoint, dict) and "model" in checkpoint:
+            state_dict = checkpoint["model"]
+        elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        if state_dict and any(key.startswith("module.") for key in state_dict):
+            state_dict = {
+                key[len("module."):] if key.startswith("module.") else key: value
+                for key, value in state_dict.items()
+            }
+
+        model.load_state_dict(state_dict, strict=True)
+
     if isinstance(checkpoint, dict) and "model" in checkpoint:
         state_dict = checkpoint["model"]
     elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:

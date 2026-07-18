@@ -176,11 +176,11 @@ class DendriticScaleAdapter(nn.Module):
                 "dend_spatial_conv_type='structure_routed_v3'"
             )
         if self.routeconv_v3_mode not in (
-            "v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"
+            "v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6", "v3_7", "v3_8"
         ):
             raise ValueError(
                 "routeconv_v3_mode must be one of: "
-                "v3_1, v3_2, v3_3, v3_4, v3_5, v3_6"
+                "v3_1, v3_2, v3_3, v3_4, v3_5, v3_6", "v3_7", "v3_8"
             )
         if self.dend_spatial_conv_type not in (
             "fadc",

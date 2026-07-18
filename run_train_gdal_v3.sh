@@ -115,51 +115,76 @@ export LD_PRELOAD="${SYS_GEOS}:${SYS_GEOS_C}"
 #     no_axis_descriptor
 #     isotropic_direction_pool
 # '''
-#CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd.py \
-#  --accum_steps 1 --epochs 100 \
-#  --batch-size 1  --sync_bn \
-#  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
-#  --sched poly --sched-on-updates \
-#  --relation-mode pdca \
-#  --use-pdca-guided-pair-decoder \
-#  --output_dir ./logs/clean_train_routconvVv_34/ \
-#  --pretrain_from '' \
-#  --val-mode all_pairs \
-#  --dend-spatial-conv-type structure_routed_v3 \
-#  --routeconv-ablation-mode full \
-#  --routeconv-v2-mode v2_6 \
-#  --routeconv-v3-mode v3_4 \
-#  --dend-residual-init 0.01 \
-#
-#CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd.py \
-#  --accum_steps 1 --epochs 100 \
-#  --batch-size 1  --sync_bn \
-#  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
-#  --sched poly --sched-on-updates \
-#  --relation-mode pdca \
-#  --use-pdca-guided-pair-decoder \
-#  --output_dir ./logs/clean_train_routconvVv_35/ \
-#  --pretrain_from '' \
-#  --val-mode all_pairs \
-#  --dend-spatial-conv-type structure_routed_v3 \
-#  --routeconv-ablation-mode full \
-#  --routeconv-v2-mode v2_6 \
-#  --routeconv-v3-mode v3_5 \
-#  --dend-residual-init 0.01 \
-#
-#CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd.py \
-#  --accum_steps 1 --epochs 100 \
-#  --batch-size 1  --sync_bn \
-#  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
-#  --sched poly --sched-on-updates \
-#  --relation-mode pdca \
-#  --use-pdca-guided-pair-decoder \
-#  --output_dir ./logs/clean_train_routconvVv_36/ \
-#  --pretrain_from '' \
-#  --val-mode all_pairs \
-#  --dend-spatial-conv-type structure_routed_v3 \
-#  --routeconv-ablation-mode full \
-#  --routeconv-v2-mode v2_6 \
-#  --routeconv-v3-mode v3_6 \
-#  --dend-residual-init 0.01 \
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd_V4.py \
+  --accum_steps 1 --epochs 1 \
+  --batch-size 1  --sync_bn \
+  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
+  --sched poly --sched-on-updates \
+  --relation-mode pdca \
+  --use-pdca-guided-pair-decoder \
+  --output_dir ./logs/v4_l0_v1_full_legacy_offset_residual \
+  --pretrain_from '' \
+  --val-mode all_pairs \
+  --dend-mechanism-config l0_v1_full_legacy_offset_residual \
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29710 train_WUSU_main_clean_pairbcd_V4.py \
+  --accum_steps 1 --epochs 1 \
+  --batch-size 1  --sync_bn \
+  --opt adamp --opt-betas 0.9 0.999 --opt-eps 1e-8 \
+  --sched poly --sched-on-updates \
+  --relation-mode pdca \
+  --use-pdca-guided-pair-decoder \
+  --output_dir ./logs/v4_l1_v1_no_prior \
+  --pretrain_from '' \
+  --val-mode all_pairs \
+  --dend-mechanism-config l1_v1_no_prior \
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun \
+  --nproc_per_node=4 \
+  --master_port=25710 \
+  train_WUSU_main_clean_pairbcd.py \
+  --accum_steps 1 \
+  --epochs 100 \
+  --batch-size 1 \
+  --sync_bn \
+  --opt adamp \
+  --opt-betas 0.9 0.999 \
+  --opt-eps 1e-8 \
+  --sched poly \
+  --sched-on-updates \
+  --relation-mode pdca \
+  --use-pdca-guided-pair-decoder \
+  --output_dir ./logs/clean_train_routconvVv_37/ \
+  --pretrain_from '' \
+  --val-mode all_pairs \
+  --dend-spatial-conv-type structure_routed_v3 \
+  --routeconv-ablation-mode full \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_7 \
+  --dend-residual-init 0.01 \
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun \
+  --nproc_per_node=4 \
+  --master_port=25710 \
+  train_WUSU_main_clean_pairbcd.py \
+  --accum_steps 1 \
+  --epochs 100 \
+  --batch-size 1 \
+  --sync_bn \
+  --opt adamp \
+  --opt-betas 0.9 0.999 \
+  --opt-eps 1e-8 \
+  --sched poly \
+  --sched-on-updates \
+  --relation-mode pdca \
+  --use-pdca-guided-pair-decoder \
+  --output_dir ./logs/clean_train_routconvVv_38/ \
+  --pretrain_from '' \
+  --val-mode all_pairs \
+  --dend-spatial-conv-type structure_routed_v3 \
+  --routeconv-ablation-mode full \
+  --routeconv-v2-mode v2_6 \
+  --routeconv-v3-mode v3_8 \
+  --dend-residual-init 0.01 \
+
 

@@ -5,7 +5,8 @@ calibration of the six routing logits.  The calibration reads the detached,
 FP32 V1 analytic descriptor; it never reads ``x_spike``, ``K``/``K_next``,
 cross-phase features, or decoder state.
 
-Six preregistered experiments share one parameter/state layout.  ``v3_6`` is
+The six original experiments and two follow-up controls share one
+parameter/state layout.  ``v3_6`` is
 the complete bounded hypothesis; ``v3_1`` is an intentionally unbounded linear
 reparameterization control.
 """
@@ -61,6 +62,14 @@ V3_MODE_CONFIGS = {
     "v3_5": V3ModeConfig(True, (1.0, 1.0, 1.0, 1.0, 1.0, 1.0), (2, 3)),
     # V3 full: bounded all-branch calibration at every active Encoder Stage.
     "v3_6": V3ModeConfig(True, (1.0, 1.0, 1.0, 1.0, 1.0, 1.0), (1, 2, 3)),
+    # V3-7: direction-only linear control at all active scales.
+    # This is an unbounded linear reparameterization control for V3-2.
+    "v3_7": V3ModeConfig(False, (0.0, 1.0, 1.0, 1.0, 1.0, 0.0), (1, 2, 3)),
+    # V3-8: bounded direction-only calibration only at scale_index=1.
+    # Scales 2 and 3 retain the same parameters/computation graph,
+    # but their calibration contribution is multiplied by zero.
+    "v3_8": V3ModeConfig(True, (0.0, 1.0, 1.0, 1.0, 1.0, 0.0), (1,)),
+
 }
 
 

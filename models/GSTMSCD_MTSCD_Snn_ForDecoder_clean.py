@@ -81,7 +81,7 @@ class GSTMSCD_WUSU(nn.Module):
         ):
             raise ValueError("V2 RouteConv mode selected while V2 is disabled")
         if self.routeconv_v3_mode not in (
-            "v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"
+            "v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6", "v3_7", "v3_8",
         ):
             raise ValueError("unsupported routeconv_v3_mode")
         if (

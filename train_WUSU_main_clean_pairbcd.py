@@ -122,7 +122,7 @@ def build_parser():
                         choices=["v2_1", "v2_2", "v2_3", "v2_4", "v2_5", "v2_6"],
                         default="v2_6", )
     parser.add_argument("--routeconv-v3-mode",
-                        choices=["v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6"],
+                        choices=["v3_1", "v3_2", "v3_3", "v3_4", "v3_5", "v3_6", "v3_7", "v3_8",],
                         default="v3_6", )
     parser.add_argument("--dend-residual-init", type=float, default=0.0)
 
